@@ -37,8 +37,9 @@ export async function PATCH(request: Request, context: RouteContext) {
   if (!parsed.success) return Response.json({ error: "Los cambios no son válidos." }, { status: 400 });
 
   const exam = await updateOwnedExam(session.user.id, id.data, parsed.data);
-  if (!exam) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
-  return Response.json(exam);
+  if (exam.status === "not_found") return Response.json({ error: "Examen no encontrado." }, { status: 404 });
+  if (exam.status === "results_exist") return Response.json({ error: "Elimina explícitamente las lecturas guardadas antes de cambiar preguntas u opciones." }, { status: 409 });
+  return Response.json(exam.exam);
 }
 
 export async function DELETE(_request: Request, context: RouteContext) {

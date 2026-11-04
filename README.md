@@ -9,7 +9,12 @@ respuestas desde el móvil. La especificación completa está en
 - **Fase 0 completada (base):** Next.js 16 (App Router) + TypeScript estricto,
   Auth.js con credenciales email/contraseña (Argon2id), Drizzle ORM + PostgreSQL,
   CRUD de exámenes aislado por profesor, PWA básica e interfaz en español.
-- Fases 1–7 pendientes (clave con LLM, plantilla, OMR, corrección, alumnos,
+- **Fase 1 implementada:** lectura de PDF local con pdf.js y OCR español con
+  Tesseract.js; clave con DeepSeek, edición manual y validación en servidor.
+- **Fase 2 implementada:** calibración por examen desde una imagen de la hoja de
+  respuestas del centro (detección de marcas, perspectiva y rejilla de burbujas);
+  se guardan solo coordenadas normalizadas, nunca la imagen.
+- Fases 3–7 pendientes (OMR, corrección, alumnos,
   exportación, endurecimiento).
 
 ## Requisitos
@@ -29,6 +34,10 @@ respuestas desde el móvil. La especificación completa está en
 3. Generar y aplicar migraciones:
    - `npm run db:generate`
    - `npm run db:migrate`
+4. Escribir la API key de DeepSeek en `DEEPSEEK_API_KEY` dentro de `.env.local`
+   (el archivo se crea con la variable vacía). Está ignorado por Git y no debe
+   compartirse. `DEEPSEEK_MODEL` usa `deepseek-flash` por defecto. Reiniciar el
+   servidor tras cambiar variables.
 
 ## Desarrollo
 
@@ -47,7 +56,14 @@ dos profesores (crea y elimina sus propios datos de prueba):
 
 ```bash
 npx tsx --env-file=.env scripts/verify-phase0.ts
+npx tsx --env-file=.env scripts/verify-phase1.ts
+npx tsx --env-file=.env scripts/verify-phase2.ts
+npx tsx scripts/verify-calibration.ts "<ruta-de-imagen>"   # prueba local del detector
 ```
+
+Los scripts crean datos de prueba y los eliminan al finalizar. El de Fase 1
+comprueba borradores, validación y aislamiento de la clave; el de Fase 2,
+la calibración de la matriz, su validación y aislamiento por profesor.
 
 ## Cuentas
 
@@ -57,6 +73,10 @@ npx tsx --env-file=.env scripts/verify-phase0.ts
 
 ## Privacidad
 
-Las fotos de las hojas de respuesta se procesan en el móvil y nunca se suben.
-En el servidor solo se guardan respuestas finales y notas. Ver el SPEC para los
+La imagen de la matriz se procesa en el navegador para detectar marcas y burbujas;
+solo se guardan sus coordenadas por examen. Los PDF (máximo 20 MB y 50 páginas) se leen en el navegador; las páginas sin texto
+seleccionable se procesan allí mismo con OCR español. El archivo no se sube ni
+guarda. Solo al pulsar **Generar clave** se envía a DeepSeek el texto extraído
+(máximo 100.000 caracteres); la clave resultante se guarda tras la acción del
+profesor. La API key de DeepSeek solo se usa en el servidor. Ver el SPEC para los
 detalles completos (RGPD, alcance, fases).

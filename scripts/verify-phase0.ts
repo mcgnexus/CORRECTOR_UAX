@@ -27,14 +27,15 @@ async function main() {
   assert.equal((await listOwnedExams(b.id)).length, 1, "B ve exámenes de más");
 
   assert.equal(await findOwnedExam(b.id, examenA.id), undefined, "B puede leer el examen de A");
-  assert.equal(await updateOwnedExam(b.id, examenA.id, { title: "Secuestrado" }), undefined, "B puede editar el examen de A");
+  assert.equal((await updateOwnedExam(b.id, examenA.id, { title: "Secuestrado" })).status, "not_found", "B puede editar el examen de A");
   assert.equal(await deleteOwnedExam(b.id, examenA.id), undefined, "B puede borrar el examen de A");
 
   const intacto = await findOwnedExam(a.id, examenA.id);
   assert.equal(intacto?.title, "Examen A", "el examen de A fue alterado");
 
   const actualizado = await updateOwnedExam(a.id, examenA.id, { title: "Examen A editado" });
-  assert.equal(actualizado?.title, "Examen A editado", "A no puede editar su examen");
+  assert.equal(actualizado.status, "updated", "A no puede editar su examen");
+  if (actualizado.status === "updated") assert.equal(actualizado.exam.title, "Examen A editado");
 
   await db.delete(users).where(eq(users.email, emailA));
   await db.delete(users).where(eq(users.email, emailB));

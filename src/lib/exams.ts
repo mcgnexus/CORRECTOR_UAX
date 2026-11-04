@@ -1,6 +1,6 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { exams } from "@/db/schema";
+import { answerKeyItems, examResults, examStudents, exams } from "@/db/schema";
 import type { ExamInput } from "@/lib/validation";
 
 export async function listOwnedExams(ownerId: string) {
@@ -29,12 +29,47 @@ export async function createOwnedExam(ownerId: string, values: ExamInput) {
 }
 
 export async function updateOwnedExam(ownerId: string, examId: string, values: Partial<ExamInput>) {
-  const [exam] = await getDb()
-    .update(exams)
-    .set({ ...values, updatedAt: new Date() })
+  const db = getDb();
+  const [current] = await db
+    .select({ numQuestions: exams.numQuestions, numOptions: exams.numOptions })
+    .from(exams)
     .where(and(eq(exams.ownerId, ownerId), eq(exams.id, examId)))
-    .returning();
-  return exam;
+    .limit(1);
+  if (!current) return { status: "not_found" as const };
+
+  const cambiaEstructura =
+    (values.numQuestions !== undefined && values.numQuestions !== current.numQuestions) ||
+    (values.numOptions !== undefined && values.numOptions !== current.numOptions);
+
+  if (!cambiaEstructura) {
+    const [exam] = await db
+      .update(exams)
+      .set({ ...values, updatedAt: new Date() })
+      .where(and(eq(exams.ownerId, ownerId), eq(exams.id, examId)))
+      .returning();
+    return exam ? { status: "updated" as const, exam } : { status: "not_found" as const };
+  }
+
+  return db.transaction(async (tx) => {
+    const locked = await tx.execute(sql`
+      select id from exams where id = ${examId} and owner_id = ${ownerId} for update
+    `);
+    if (locked.length === 0) return { status: "not_found" as const };
+    const savedResults = await tx
+      .select({ studentId: examResults.studentId })
+      .from(examResults)
+      .innerJoin(examStudents, eq(examStudents.id, examResults.studentId))
+      .where(eq(examStudents.examId, examId))
+      .limit(1);
+    if (savedResults.length > 0) return { status: "results_exist" as const };
+    await tx.delete(answerKeyItems).where(eq(answerKeyItems.examId, examId));
+    const [exam] = await tx
+      .update(exams)
+      .set({ ...values, status: "draft", updatedAt: new Date() })
+      .where(and(eq(exams.ownerId, ownerId), eq(exams.id, examId)))
+      .returning();
+    return exam ? { status: "updated" as const, exam } : { status: "not_found" as const };
+  });
 }
 
 export async function deleteOwnedExam(ownerId: string, examId: string) {

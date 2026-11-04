@@ -8,6 +8,27 @@
       "when": 1793780574656,
       "tag": "0000_shiny_stellaris",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793788193658,
+      "tag": "0001_nosy_emma_frost",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793794199448,
+      "tag": "0002_naive_ultimatum",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793802870401,
+      "tag": "0003_flippant_lilandra",
+      "breakpoints": true
     }
   ]
 }

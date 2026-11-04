@@ -51,7 +51,7 @@ La foto se procesa por completo en el móvil y se descarta: al servidor solo lle
 
 ## 4. Decisiones de diseño
 
-1. **La app genera la plantilla** (marcas de registro en las esquinas y burbujas en posiciones fijas). Leer una hoja arbitraria es mucho menos fiable. Si el centro ya tiene plantilla propia, se define su geometría en configuración.
+1. **La app calibra la matriz del centro a partir de una imagen** de la hoja de respuestas en blanco. Se detectan las cuatro marcas de registro y la rejilla de burbujas, y se guarda por examen la geometría normalizada (coordenadas), no la imagen. Leer sin calibración es mucho menos fiable.
 2. **El LLM nunca puntúa.** Solo genera la clave. Comparar y puntuar es código determinista.
 3. **La clave la valida siempre el profesor** antes de corregir. El LLM puede equivocarse; es el control más importante.
 4. **El OMR siempre devuelve confianza** y marca las lecturas de baja confianza para revisión. Solo se autoaceptan lecturas que superen el umbral calibrado y validado con el conjunto de prueba; no se promete detectar perfectamente toda ambigüedad.
@@ -64,7 +64,7 @@ La foto se procesa por completo en el móvil y se descarta: al servidor solo lle
 - **Servidor**: rutas API de Next.js, PostgreSQL (Neon) con Drizzle ORM y Auth.js (email). Guarda usuarios, exámenes, claves, reglas de puntuación, roster por examen, entregas, respuestas y notas. No guarda el PDF del examen ni las fotos de las hojas.
 - **LLM**: API de DeepSeek llamada desde el servidor (la clave de API nunca llega al navegador), con salida JSON estricta. Capa intercambiable mediante una interfaz `AnswerKeyProvider`.
 - **Texto del PDF**: pdf.js en el navegador; al servidor solo llega el texto del examen. Si el PDF es escaneado, OCR en el navegador (Tesseract.js) o clave introducida a mano.
-- **Plantilla**: se genera en el navegador (pdf-lib). La geometría se deriva del número de preguntas y opciones con una única función compartida por el generador y el OMR.
+- **Matriz**: el profesor sube una imagen de la hoja de respuestas del centro. La calibración (marcas, perspectiva y rejilla) ocurre en el navegador y solo se guardan las coordenadas normalizadas por examen; la imagen no se transmite ni persiste.
 - **OMR**: en el móvil, dentro de un Web Worker, con OpenCV.js (corrección de perspectiva con las marcas de registro y medición de relleno por burbuja). Si OpenCV.js resulta pesado en móviles de gama baja, se puede hacer la detección con canvas y JavaScript propio, viable porque la plantilla es fija.
 - **Sincronización entre dispositivos**: la fuente de verdad es el servidor. Cada dispositivo carga el examen y su roster al abrirlo. Las ediciones concurrentes de respuestas requieren control de versión o aviso de conflicto; no se sobrescribe silenciosamente una edición concurrente.
 - **Exportación**: se genera en el servidor a partir de los datos guardados. La matriz de formatos admitidos está definida en M7 y en el contrato del endpoint.
@@ -97,7 +97,7 @@ Las tablas relacionadas deben imponer integridad referencial para que una entreg
 
 ### M2. Plantilla
 
-- Generar el PDF imprimible (n preguntas × opciones, marcas de registro). No lleva campos de alumno: el profesor indica a quién pertenece la hoja en la app antes de fotografiarla.
+- Calibrar la matriz del centro subiendo una imagen de la hoja en blanco: detectar marcas de registro y burbujas, y guardar la geometría por examen. La app no imprime plantillas; el profesor indica a quién pertenece la hoja antes de fotografiarla.
 
 ### M3. Captura y lectura
 
@@ -154,7 +154,7 @@ En el servidor:
 
 En el navegador:
 
-- `template.generate(numQuestions, numOptions)` devuelve el PDF de la plantilla
+- `matrix.calibrate(imagen, numQuestions, numOptions)` detecta marcas y burbujas y devuelve la geometría normalizada
 - `omr.read(imagen, geometría)` devuelve la lectura con confianza (Web Worker)
 - `scoring.compute(clave, lectura, regla)` devuelve aciertos, fallos, blancos, bruto y nota conforme a la fórmula normativa de M5 (módulo compartido; el servidor valida y persiste el cálculo definitivo)
 
@@ -174,7 +174,7 @@ Cada fase termina con criterios de aceptación y tests. Ramas pequeñas y revisi
 
 **Fase 1 — Clave.** Extracción de texto del PDF, integración con DeepSeek con JSON validado, pantalla de revisión y validación. *Aceptación:* con 3 exámenes de prueba se obtiene una clave editable y validable; si el LLM devuelve basura, se reintenta y se informa.
 
-**Fase 2 — Plantilla.** Generador del PDF con marcas de registro y función de geometría compartida. *Aceptación:* se imprime y se rellena a mano una hoja de prueba.
+**Fase 2 — Calibración de la matriz.** Detección de las cuatro marcas de registro, corrección de perspectiva y rejilla de burbujas desde una imagen de la hoja del centro; guardado de coordenadas normalizadas por examen. *Aceptación:* una foto de la matriz (inclinada y con una marca poco nítida) produce 2 bloques × 25 filas × 4 opciones y la calibración se reutiliza al reabrir el examen; la imagen no sale del dispositivo.
 
 **Fase 3 — OMR en el móvil.** Módulo en Web Worker con corrección de perspectiva y detección de burbujas; corpus de fotos reales etiquetadas manualmente, con partición de calibración y evaluación, dispositivos admitidos y condiciones documentadas (luz normal, sombra, hoja torcida, borrones). *Aceptación:* en el conjunto reservado, (a) ≥ 99 % de las respuestas autoaceptadas coinciden con la referencia manual y (b) ≤ 1 % de las preguntas etiquetadas como ambiguas/ilegibles por la referencia se autoaceptan en vez de enviarse a revisión. Publicar denominadores, tamaño/composición del corpus y métricas por condición. Una lectura de baja confianza se deriva a revisión; no se afirma que toda ambigüedad se detecta. Medir también tiempo en un móvil de gama media.
 
@@ -198,7 +198,7 @@ Cada fase termina con criterios de aceptación y tests. Ramas pequeñas y revisi
 Supuestos que he tomado (corrígelos si no son así):
 
 - 4 opciones por pregunta, una sola correcta, hasta 100 preguntas por examen.
-- Una hoja de respuestas por alumno, con la plantilla generada por la app.
+- Una hoja de respuestas por alumno, usando la matriz del centro calibrada por examen.
 - Penalización por fallo configurable, desactivada por defecto.
 - Se guardan las respuestas y la nota de cada alumno en el servidor; la foto nunca se guarda.
 - Idioma de la interfaz: español. Los alumnos son universitarios y mayores de edad; el RGPD se aplica igualmente a sus datos.
