@@ -9,7 +9,7 @@ test("reintenta una sola vez si DeepSeek devuelve JSON vacío y valida el result
   const provider = createDeepSeekAnswerKeyProvider(async (_input, init) => {
     calls += 1;
     const request = JSON.parse(String(init?.body)) as { model: string; response_format: { type: string } };
-    assert.equal(request.model, "deepseek-flash");
+    assert.equal(request.model, "deepseek-chat");
     assert.equal(request.response_format.type, "json_object");
     const content = calls === 1
       ? "   "

@@ -48,7 +48,7 @@ async function requestAnswerKey(
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) throw new Error("DEEPSEEK_API_KEY_MISSING");
 
-  const model = process.env.DEEPSEEK_MODEL?.trim() || "deepseek-flash";
+  const model = process.env.DEEPSEEK_MODEL?.trim() || "deepseek-chat";
   const options = Array.from({ length: numOptions }, (_, index) => String.fromCharCode(65 + index));
   const instructions = [
     "Resuelve un examen tipo test usando exclusivamente el texto proporcionado.",

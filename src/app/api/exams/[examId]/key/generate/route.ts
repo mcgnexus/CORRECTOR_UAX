@@ -7,6 +7,7 @@ import { readJsonLimited } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 type RouteContext = { params: Promise<{ examId: string }> };
 const idSchema = z.string().uuid();
