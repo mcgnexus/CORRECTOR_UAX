@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calibrateMatrix, type GrayImage } from "@/lib/matrix/detect";
+import { calibrateMatrix, detectRegistrationMarkers, markersFromPoints, type GrayImage } from "@/lib/matrix/detect";
 
 function blank(width: number, height: number): GrayImage {
   const data = new Uint8Array(width * height).fill(255);
@@ -86,4 +86,50 @@ test("rechaza imágenes demasiado pequeñas", () => {
 test("rechaza una imagen sin marcas", () => {
   const result = calibrateMatrix(blank(900, 1200), { numQuestions: 10, numOptions: 4 });
   assert.equal(result.success, false);
+});
+
+test("ordena cuatro esquinas marcadas en cualquier orden como tl, tr, bl y br", () => {
+  const markers = markersFromPoints([
+    { x: 840, y: 60 },
+    { x: 60, y: 1140 },
+    { x: 840, y: 1140 },
+    { x: 60, y: 60 },
+  ]);
+  assert.ok(markers);
+  assert.deepEqual(markers?.map((marker) => [Math.round(marker.x), Math.round(marker.y)]), [[60, 60], [840, 60], [60, 1140], [840, 1140]]);
+  assert.equal(markersFromPoints([{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 10, y: 10 }, { x: 10, y: 10 }]), undefined);
+});
+
+test("detecta marcas tenues con umbral adaptativo", () => {
+  const image = blank(900, 1200);
+  const faint = (cx: number, cy: number, size: number) => {
+    for (let y = cy - size / 2; y < cy + size / 2; y += 1) {
+      for (let x = cx - size / 2; x < cx + size / 2; x += 1) {
+        image.data[Math.round(y) * image.width + Math.round(x)] = 205;
+      }
+    }
+  };
+  faint(60, 60, 14);
+  faint(840, 60, 14);
+  faint(60, 1140, 14);
+  faint(840, 1140, 14);
+  assert.equal(detectRegistrationMarkers(image)?.length, 4);
+});
+
+test("permite calibrar con esquinas indicadas manualmente aunque no se detecten las marcas", () => {
+  const image = buildSheet(10, 4);
+  for (let y = 50; y < 70; y += 1) {
+    for (let x = 50; x < 70; x += 1) image.data[y * image.width + x] = 255;
+  }
+  const manual = markersFromPoints([
+    { x: 60, y: 60 },
+    { x: 840, y: 60 },
+    { x: 60, y: 1140 },
+    { x: 840, y: 1140 },
+  ]);
+  assert.ok(manual);
+  const result = calibrateMatrix(image, { numQuestions: 10, numOptions: 4 }, manual);
+  assert.equal(result.success, true);
+  if (!result.success) return;
+  assert.equal(result.calibration.bubbles.length, 40);
 });

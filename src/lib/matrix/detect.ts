@@ -52,12 +52,38 @@ type Candidate = {
   fill: number;
 };
 
-const DARK_THRESHOLD = 128;
+function otsuThreshold(data: Uint8Array): number {
+  const histogram = new Uint32Array(256);
+  for (let index = 0; index < data.length; index += 1) histogram[data[index]] += 1;
+  const total = data.length;
+  let sum = 0;
+  for (let value = 0; value < 256; value += 1) sum += value * histogram[value];
+  let sumBackground = 0;
+  let weightBackground = 0;
+  let best = 0;
+  let bestVariance = -1;
+  for (let value = 0; value < 256; value += 1) {
+    weightBackground += histogram[value];
+    if (weightBackground === 0) continue;
+    const weightForeground = total - weightBackground;
+    if (weightForeground === 0) break;
+    sumBackground += value * histogram[value];
+    const meanBackground = sumBackground / weightBackground;
+    const meanForeground = (sum - sumBackground) / weightForeground;
+    const variance = weightBackground * weightForeground * (meanBackground - meanForeground) ** 2;
+    if (variance > bestVariance) {
+      bestVariance = variance;
+      best = value;
+    }
+  }
+  return Math.min(254, Math.max(1, best));
+}
 
 function binarize(image: GrayImage): Uint8Array {
+  const threshold = otsuThreshold(image.data);
   const binary = new Uint8Array(image.width * image.height);
   for (let index = 0; index < binary.length; index += 1) {
-    binary[index] = image.data[index] < DARK_THRESHOLD ? 1 : 0;
+    binary[index] = image.data[index] <= threshold ? 1 : 0;
   }
   return binary;
 }
@@ -231,6 +257,46 @@ function inferRectangle(points: Candidate[], image: GrayImage): Candidate[] | un
   return bestSet ? [bestSet.tl, bestSet.tr, bestSet.bl, bestSet.br] : undefined;
 }
 
+function pickFourCorners(points: Candidate[], image: GrayImage): Candidate[] | undefined {
+  const targets = [
+    { x: image.width * 0.1, y: image.height * 0.1 },
+    { x: image.width * 0.9, y: image.height * 0.1 },
+    { x: image.width * 0.1, y: image.height * 0.9 },
+    { x: image.width * 0.9, y: image.height * 0.9 },
+  ];
+  const remaining = [...points];
+  const picked: Candidate[] = [];
+  for (const target of targets) {
+    let bestIndex = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    remaining.forEach((candidate, index) => {
+      const distance = Math.hypot(candidate.x - target.x, candidate.y - target.y);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    });
+    if (bestIndex < 0) return undefined;
+    picked.push(remaining.splice(bestIndex, 1)[0]);
+  }
+  return picked;
+}
+
+export function markersFromPoints(points: Point[]): MatrixMarker[] | undefined {
+  if (points.length !== 4) return undefined;
+  const tl = points.reduce((best, point) => (point.x + point.y < best.x + best.y ? point : best));
+  const br = points.reduce((best, point) => (point.x + point.y > best.x + best.y ? point : best));
+  const tr = points.reduce((best, point) => (point.x - point.y > best.x - best.y ? point : best));
+  const bl = points.reduce((best, point) => (point.y - point.x > best.y - best.x ? point : best));
+  const ordered = [tl, tr, bl, br];
+  const distinct = new Set(ordered.map((point) => `${Math.round(point.x)}:${Math.round(point.y)}`));
+  if (distinct.size !== 4) return undefined;
+  const area = Math.abs((tr.x - tl.x) * (bl.y - tl.y) - (bl.x - tl.x) * (tr.y - tl.y));
+  if (area < 1000) return undefined;
+  const size = Math.max(4, Math.min(Math.hypot(tr.x - tl.x, tr.y - tl.y), Math.hypot(bl.x - tl.x, bl.y - tl.y)) * 0.015);
+  return ordered.map((point) => ({ x: point.x, y: point.y, size }));
+}
+
 function selectMarkers(image: GrayImage, components: Component[], requireFour = false): MatrixMarker[] | undefined {
   const imageArea = image.width * image.height;
   const candidates = toCandidates(components)
@@ -238,47 +304,46 @@ function selectMarkers(image: GrayImage, components: Component[], requireFour = 
       const aspect = candidate.width / candidate.height;
       const relativeArea = candidate.area / imageArea;
       return (
-        aspect >= 0.75 &&
-        aspect <= 1.33 &&
-        candidate.fill >= 0.85 &&
-        relativeArea >= 0.00002 &&
-        relativeArea <= 0.004 &&
-        candidate.width >= 6 &&
-        candidate.height >= 6
+        aspect >= 0.55 &&
+        aspect <= 1.8 &&
+        candidate.fill >= 0.5 &&
+        relativeArea >= 0.000004 &&
+        relativeArea <= 0.01 &&
+        candidate.width >= 4 &&
+        candidate.height >= 4
       );
     })
     .sort((a, b) => b.area - a.area)
-    .slice(0, 40);
+    .slice(0, 80);
 
   if (candidates.length < (requireFour ? 4 : 3)) return undefined;
 
-  const reference = candidates[0];
+  const sizes = candidates.map((candidate) => (candidate.width + candidate.height) / 2).sort((a, b) => a - b);
+  const medianSize = sizes[Math.floor(sizes.length / 2)];
   const similar = candidates.filter((candidate) => {
-    const areaRatio = candidate.area / reference.area;
-    const widthRatio = candidate.width / reference.width;
-    const heightRatio = candidate.height / reference.height;
-    return areaRatio >= 0.5 && widthRatio >= 0.6 && widthRatio <= 1.6 && heightRatio >= 0.6 && heightRatio <= 1.6;
+    const size = (candidate.width + candidate.height) / 2;
+    return size >= medianSize * 0.55 && size <= medianSize * 1.8;
   });
-  if (requireFour && similar.length < 4) return undefined;
-  if (similar.length < 3) return undefined;
 
-  const four = similar.length === 3 ? inferRectangle(similar, image) : undefined;
-  const ordered = four ?? (() => {
+  let ordered: Candidate[] | undefined;
+  if (similar.length >= 4) ordered = pickFourCorners(similar, image);
+  if (!ordered && similar.length >= 3) ordered = inferRectangle(similar.slice(0, 4), image);
+  if (!ordered) {
+    if (similar.length < 3) return undefined;
     const points = similar.slice(0, 4);
     const tl = points.reduce((best, current) => (current.x + current.y < best.x + best.y ? current : best));
     const br = points.reduce((best, current) => (current.x + current.y > best.x + best.y ? current : best));
     const tr = points.reduce((best, current) => (current.x - current.y > best.x - best.y ? current : best));
     const bl = points.reduce((best, current) => (current.y - current.x > best.y - best.x ? current : best));
-    return [tl, tr, bl, br];
-  })();
+    ordered = [tl, tr, bl, br];
+  }
 
-  if (!ordered) return undefined;
   const distinct = new Set(ordered.map((marker) => `${Math.round(marker.x)}:${Math.round(marker.y)}`));
   if (distinct.size !== 4) return undefined;
 
   const [tl, tr, bl] = ordered;
   const quadArea = Math.abs((tr.x - tl.x) * (bl.y - tl.y) - (bl.x - tl.x) * (tr.y - tl.y));
-  if (quadArea / imageArea < 0.05) return undefined;
+  if (quadArea / imageArea < 0.03) return undefined;
 
   return ordered.map((marker) => ({
     x: marker.x,
@@ -298,7 +363,7 @@ export function detectRegistrationMarkers(image: GrayImage): MatrixMarker[] | un
   const bottom = Math.hypot(br.x - bl.x, br.y - bl.y);
   const left = Math.hypot(bl.x - tl.x, bl.y - tl.y);
   const right = Math.hypot(br.x - tr.x, br.y - tr.y);
-  if (Math.min(top, bottom) < image.width * 0.15 || Math.min(left, right) < image.height * 0.15) return undefined;
+  if (Math.min(top, bottom) < image.width * 0.1 || Math.min(left, right) < image.height * 0.1) return undefined;
   return markers;
 }
 
@@ -324,58 +389,55 @@ function cluster(values: number[], tolerance: number) {
   return clusters;
 }
 
-export function calibrateMatrix(image: GrayImage, options: CalibrationOptions): CalibrationResult {
+export function calibrateMatrix(image: GrayImage, options: CalibrationOptions, manualMarkers?: MatrixMarker[]): CalibrationResult {
   if (image.width < 300 || image.height < 300) {
     return { success: false, error: "La imagen es demasiado pequeña para calibrar." };
   }
 
   const components = findComponents(image, binarize(image));
-  const markers = selectMarkers(image, components);
-  if (!markers) return { success: false, error: "No se encontraron las cuatro marcas de registro." };
+  const markers = manualMarkers && manualMarkers.length === 4
+    ? manualMarkers
+    : selectMarkers(image, components);
+  if (!markers) return { success: false, error: "No se encontraron las cuatro marcas de registro. Puedes marcarlas manualmente." };
 
   const markerSize = markers.reduce((sum, marker) => sum + marker.size, 0) / 4;
-  const minBubble = markerSize * 1.0;
-  const maxBubble = markerSize * 1.9;
+  const minBubble = markerSize * 0.55;
+  const maxBubble = markerSize * 2.4;
 
   const bubbleCandidates = toCandidates(components).filter((candidate) => {
     const aspect = candidate.width / candidate.height;
     const size = (candidate.width + candidate.height) / 2;
     if (size < minBubble || size > maxBubble) return false;
-    if (aspect < 0.65 || aspect > 1.5) return false;
+    if (aspect < 0.45 || aspect > 2.2) return false;
     return !markers.some((marker) => Math.hypot(marker.x - candidate.x, marker.y - candidate.y) < markerSize);
   });
 
-  if (bubbleCandidates.length < options.numQuestions) {
+  const totalColumns = options.numOptions * 2;
+  const rowsExpected = Math.ceil(options.numQuestions / 2);
+  if (bubbleCandidates.length < totalColumns * 2) {
     return { success: false, error: "No se detectaron suficientes burbujas. Acerca la cámara o usa una imagen más nítida." };
   }
 
-  const tolerance = markerSize * 0.55;
-  const columnClusters = cluster(bubbleCandidates.map((candidate) => candidate.x), tolerance)
-    .filter((item) => item.count >= 3)
+  const tolerance = markerSize * 0.6;
+  const allColumns = cluster(bubbleCandidates.map((candidate) => candidate.x), tolerance);
+  const allRows = cluster(bubbleCandidates.map((candidate) => candidate.y), tolerance);
+
+  const columns = allColumns
+    .sort((a, b) => b.count - a.count)
+    .slice(0, totalColumns)
     .sort((a, b) => a.center - b.center);
-  const rowClusters = cluster(bubbleCandidates.map((candidate) => candidate.y), tolerance)
-    .filter((item) => item.count >= 4)
+  if (columns.length < totalColumns) {
+    return { success: false, error: "No se pudo reconstruir la rejilla de respuestas. Ajusta el encuadre o marca las esquinas manualmente." };
+  }
+
+  const rows = allRows
+    .sort((a, b) => b.count - a.count)
+    .slice(0, rowsExpected)
     .sort((a, b) => a.center - b.center);
-
-  if (columnClusters.length < options.numOptions * 2 || rowClusters.length < 5) {
-    return { success: false, error: "No se pudo reconstruir la rejilla de respuestas." };
+  if (rows.length < rowsExpected) {
+    return { success: false, error: `Se esperaban ${rowsExpected} filas y se detectaron ${rows.length}.` };
   }
 
-  const expectedBlocks = Math.max(1, Math.round(columnClusters.length / options.numOptions));
-  if (expectedBlocks !== 2) {
-    return { success: false, error: "La matriz debe tener dos bloques de preguntas." };
-  }
-
-  const mid = columnClusters.length / 2;
-  const leftColumns = columnClusters.slice(0, mid);
-  const rightColumns = columnClusters.slice(mid);
-
-  const rowsExpected = Math.ceil(options.numQuestions / 2);
-  if (rowClusters.length < rowsExpected) {
-    return { success: false, error: `Se esperaban ${rowsExpected} filas y se detectaron ${rowClusters.length}.` };
-  }
-
-  const rows = rowClusters.slice(0, rowsExpected);
   const homography = solveHomography(
     markers.map(({ x, y }) => ({ x, y })),
     [
@@ -386,16 +448,18 @@ export function calibrateMatrix(image: GrayImage, options: CalibrationOptions): 
     ],
   );
 
+  const leftColumns = columns.slice(0, options.numOptions);
+  const rightColumns = columns.slice(options.numOptions, totalColumns);
   const blocks = [leftColumns, rightColumns];
   const bubbles: MatrixBubble[] = [];
 
   for (let blockIndex = 0; blockIndex < 2; blockIndex += 1) {
-    const columns = blocks[blockIndex];
+    const blockColumns = blocks[blockIndex];
     for (let rowIndex = 0; rowIndex < rowsExpected; rowIndex += 1) {
       const questionNo = blockIndex * rowsExpected + rowIndex + 1;
       if (questionNo > options.numQuestions) break;
       for (let optionIndex = 0; optionIndex < options.numOptions; optionIndex += 1) {
-        const column = columns[optionIndex];
+        const column = blockColumns[optionIndex];
         if (!column) return { success: false, error: "Faltan columnas de opciones en la matriz." };
         const normalized = project(homography, column.center, rows[rowIndex].center);
         bubbles.push({ questionNo, optionIndex, x: normalized.x, y: normalized.y });
@@ -411,7 +475,7 @@ export function calibrateMatrix(image: GrayImage, options: CalibrationOptions): 
     project(homography, leftColumns[0].center, rows[0].center).y -
       project(homography, leftColumns[0].center, rows[1].center).y,
   );
-  const bubbleRadius = Math.min(xPitchCanonical, yPitchCanonical) * 0.3;
+  const bubbleRadius = Math.min(xPitchCanonical, yPitchCanonical) * 0.32;
 
   return {
     success: true,

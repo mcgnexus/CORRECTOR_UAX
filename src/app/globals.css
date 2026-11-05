@@ -232,12 +232,33 @@ td {
 
 .omr-preview {
   display: block;
+  width: auto;
+  height: auto;
   max-width: min(100%, 420px);
   max-height: 60vh;
   object-fit: contain;
   margin-top: 0.8rem;
   border: 1px solid var(--borde);
   border-radius: 8px;
+  background: #fff;
+}
+
+.matriz-ajustes {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--borde);
+  border-radius: 8px;
+}
+
+.matriz-ajustes legend {
+  padding: 0 0.35rem;
+  font-weight: 600;
+}
+
+.matriz-ajustes input[type="range"] {
+  width: 100%;
 }
 
 .omr-table-wrap {

@@ -44,7 +44,13 @@ function sampleRing(image: GrayImage, x: number, y: number, inner: number, outer
   return count ? total / count : 255;
 }
 
-export function readOmr(image: GrayImage, profile: OmrProfile, numQuestions: number, numOptions: number): OmrResult {
+export function readOmr(
+  image: GrayImage,
+  profile: OmrProfile,
+  numQuestions: number,
+  numOptions: number,
+  manualMarkers?: MatrixMarker[],
+): OmrResult {
   if (image.data.length !== image.width * image.height) throw new Error("La imagen no tiene un formato válido.");
   let total = 0;
   let squared = 0;
@@ -61,14 +67,14 @@ export function readOmr(image: GrayImage, profile: OmrProfile, numQuestions: num
   }
   const mean = total / samples;
   const deviation = Math.sqrt(Math.max(0, squared / samples - mean * mean));
-  if (mean < 35 || mean > 254.9 || deviation < 1.5) throw new Error("La iluminación es insuficiente o está saturada. Repite la foto con luz uniforme y sin reflejos.");
-  if (gradient / (samples * 2) < 0.05) throw new Error("La imagen está demasiado borrosa. Mantén el móvil quieto y repite la captura.");
-  const markers = detectRegistrationMarkers(image);
-  if (!markers) throw new Error("No se detectan cuatro marcas completas. Repite la foto con la hoja entera y en vertical.");
+  if (mean < 20 || mean > 254.9 || deviation < 1.2) throw new Error("La iluminación es insuficiente o está saturada. Repite la foto con luz uniforme y sin reflejos.");
+  if (gradient / (samples * 2) < 0.04) throw new Error("La imagen está demasiado borrosa. Mantén el móvil quieto y repite la captura.");
+  const markers = manualMarkers && manualMarkers.length === 4 ? manualMarkers : detectRegistrationMarkers(image);
+  if (!markers) throw new Error("No se detectan cuatro marcas completas. Puedes marcarlas manualmente en la pantalla.");
   const spanX = (Math.hypot(markers[1].x - markers[0].x, markers[1].y - markers[0].y) + Math.hypot(markers[3].x - markers[2].x, markers[3].y - markers[2].y)) / 2;
   const spanY = (Math.hypot(markers[2].x - markers[0].x, markers[2].y - markers[0].y) + Math.hypot(markers[3].x - markers[1].x, markers[3].y - markers[1].y)) / 2;
   if (image.width < 600 || image.height < 800) throw new Error("La resolución es insuficiente. Acerca la cámara y repite la foto.");
-  if (spanX / image.width < 0.3 || spanY / image.height < 0.55) throw new Error("La hoja aparece recortada o demasiado lejos. Repite la foto incluyendo sus cuatro esquinas.");
+  if (spanX / image.width < 0.25 || spanY / image.height < 0.45) throw new Error("La hoja aparece recortada o demasiado lejos. Repite la foto incluyendo sus cuatro esquinas.");
   const radius = Math.max(2, Math.min(spanX, spanY) * profile.bubbleRadius);
   const values = new Map<number, Array<{ option: number; darkness: number }>>();
   for (const bubble of profile.bubbles) {

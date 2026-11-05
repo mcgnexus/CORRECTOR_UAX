@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OmrAnswer, OmrProfile, OmrResult } from "@/lib/omr/read";
+import { detectRegistrationMarkers, markersFromPoints, type MatrixMarker, type Point } from "@/lib/matrix/detect";
 import { deleteQueuedResult, listQueuedResults, purgeQueuedResults, saveQueuedResult, type QueuedResult } from "@/lib/offline-queue/indexed-db";
 import { applyQueueDecision, classifyQueueResponse } from "@/lib/offline-queue/queue-state";
 
@@ -49,13 +50,19 @@ const FLAGS = { ok: "Leída", blank: "En blanco", multiple: "Varias marcas", fai
 export default function OmrReader({ examId, ownerId, numQuestions, numOptions, profile, initialStudents: students, onStudentsChange, keyValidated, onKeyPending }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const workerRef = useRef<Worker | null>(null);
-  const previewRef = useRef<string | null>(null);
+  const bitmapRef = useRef<ImageBitmap | null>(null);
   const operationRef = useRef(0);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
   const [result, setResult] = useState<OmrResult | null>(null);
-  const [preview, setPreview] = useState("");
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const [rotation, setRotation] = useState(0);
+  const [tone, setTone] = useState({ brightness: 0, contrast: 1 });
+  const [manualMode, setManualMode] = useState(false);
+  const [markerClicks, setMarkerClicks] = useState<Point[]>([]);
+  const [detectedMarkers, setDetectedMarkers] = useState<MatrixMarker[] | null>(null);
+  const paintParamsRef = useRef({ angle: 0, brightness: 0, contrast: 1 });
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [review, setReview] = useState<ReviewAnswer[] | null>(null);
   const [reviewHasUnsavedChanges, setReviewHasUnsavedChanges] = useState(false);
@@ -80,9 +87,14 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     queuedPersistedKeyRef.current = null;
     workerRef.current?.terminate();
     workerRef.current = null;
-    if (previewRef.current) URL.revokeObjectURL(previewRef.current);
-    previewRef.current = null;
-    setPreview("");
+    bitmapRef.current?.close();
+    bitmapRef.current = null;
+    setImageLoaded(false);
+    setRotation(0);
+    setTone({ brightness: 0, contrast: 1 });
+    setManualMode(false);
+    setMarkerClicks([]);
+    setDetectedMarkers(null);
     setResult(null);
     setReview(null);
     setReviewHasUnsavedChanges(false);
@@ -97,7 +109,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
 
   useEffect(() => () => {
     workerRef.current?.terminate();
-    if (previewRef.current) URL.revokeObjectURL(previewRef.current);
+    bitmapRef.current?.close();
   }, []);
 
   const refreshQueue = useCallback(async () => {
@@ -187,6 +199,148 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     setSelectedStudentId(studentId);
   }
 
+  function drawMarkers(markers: MatrixMarker[]) {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) return;
+    context.save();
+    context.lineWidth = Math.max(2, canvas.width / 500);
+    context.strokeStyle = "#2a9d8f";
+    for (const marker of markers) {
+      const size = Math.max(12, marker.size);
+      context.strokeRect(marker.x - size / 2, marker.y - size / 2, size, size);
+    }
+    context.restore();
+  }
+
+  function applyToneData(context: CanvasRenderingContext2D, width: number, height: number, settings: { brightness: number; contrast: number }) {
+    if (settings.brightness === 0 && settings.contrast === 1) return;
+    const imageData = context.getImageData(0, 0, width, height);
+    const data = imageData.data;
+    for (let offset = 0; offset < data.length; offset += 4) {
+      data[offset] = Math.max(0, Math.min(255, (data[offset] - 128) * settings.contrast + 128 + settings.brightness));
+      data[offset + 1] = Math.max(0, Math.min(255, (data[offset + 1] - 128) * settings.contrast + 128 + settings.brightness));
+      data[offset + 2] = Math.max(0, Math.min(255, (data[offset + 2] - 128) * settings.contrast + 128 + settings.brightness));
+    }
+    context.putImageData(imageData, 0, 0);
+  }
+
+  function paint(angle: number, settings: { brightness: number; contrast: number }) {
+    const bitmap = bitmapRef.current;
+    const canvas = canvasRef.current;
+    if (!bitmap || !canvas) return null;
+    const swapped = angle === 90 || angle === 270;
+    const rawWidth = swapped ? bitmap.height : bitmap.width;
+    const rawHeight = swapped ? bitmap.width : bitmap.height;
+    const factor = Math.min(1, MAX_SIDE / Math.max(rawWidth, rawHeight));
+    const width = Math.round(rawWidth * factor);
+    const height = Math.round(rawHeight * factor);
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) { setError("No se pudo preparar la imagen."); setBusy(false); return null; }
+    context.save();
+    context.translate(width / 2, height / 2);
+    context.rotate((angle * Math.PI) / 180);
+    const drawWidth = Math.round(bitmap.width * factor);
+    const drawHeight = Math.round(bitmap.height * factor);
+    context.drawImage(bitmap, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+    context.restore();
+    applyToneData(context, width, height, settings);
+    paintParamsRef.current = { angle, brightness: settings.brightness, contrast: settings.contrast };
+    setRotation(angle);
+    setTone(settings);
+    return { canvas, context, width, height };
+  }
+
+  function renderAndAnalyze(angle: number, settings: { brightness: number; contrast: number }, override?: MatrixMarker[]) {
+    const painted = paint(angle, settings);
+    if (!painted) { setBusy(false); return; }
+    const { context, width, height } = painted;
+
+    if (override) {
+      setDetectedMarkers(override);
+      setManualMode(false);
+      setMarkerClicks([]);
+      drawMarkers(override);
+      startRead(override);
+      return;
+    }
+
+    const pixels = context.getImageData(0, 0, width, height);
+    const gray = new Uint8Array(width * height);
+    for (let index = 0; index < gray.length; index += 1) {
+      const offset = index * 4;
+      gray[index] = Math.round(pixels.data[offset] * 0.299 + pixels.data[offset + 1] * 0.587 + pixels.data[offset + 2] * 0.114);
+    }
+    const markers = detectRegistrationMarkers({ width, height, data: gray });
+    if (!markers) {
+      setDetectedMarkers(null);
+      setManualMode(true);
+      setMarkerClicks([]);
+      setBusy(false);
+      setError("No se detectaron las cuatro marcas. Toca sus esquinas en la imagen para indicarlas manualmente.");
+      return;
+    }
+    setDetectedMarkers(markers);
+    setManualMode(false);
+    setMarkerClicks([]);
+    drawMarkers(markers);
+    startRead(markers);
+  }
+
+  function startRead(markers: MatrixMarker[]) {
+    const params = paintParamsRef.current;
+    const painted = paint(params.angle, { brightness: params.brightness, contrast: params.contrast });
+    const canvas = canvasRef.current;
+    const context = painted?.context ?? canvas?.getContext("2d", { willReadFrequently: true });
+    if (!canvas || !context || !profile) return;
+    const operation = operationRef.current;
+    setBusy(true);
+    setError("");
+    setProgress(0);
+    setResult(null);
+    setReview(null);
+    setReviewHasUnsavedChanges(false);
+    const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+    drawMarkers(markers);
+    const worker = new Worker(new URL("@/lib/omr/worker.ts", import.meta.url));
+    workerRef.current = worker;
+    worker.onmessage = (event: MessageEvent<{ type: string; value?: number; message?: string; result?: OmrResult }>) => {
+      if (operation !== operationRef.current) return;
+      if (event.data.type === "progress") setProgress(event.data.value ?? 0);
+      if (event.data.type === "result" && event.data.result) {
+        setResult(event.data.result);
+        setReviewHasUnsavedChanges(true);
+        setReview(event.data.result.answers.map((answer) => ({
+          q: answer.q,
+          detected: answer.detected,
+          confidence: answer.confidence,
+          flag: answer.flag,
+          selectedOption: answer.detected,
+          confirmed: false,
+        })));
+        setBusy(false);
+        worker.terminate();
+        workerRef.current = null;
+      }
+      if (event.data.type === "error") {
+        setError(event.data.message ?? "No se pudo leer la hoja.");
+        setBusy(false);
+        worker.terminate();
+        workerRef.current = null;
+      }
+    };
+    worker.onerror = () => {
+      if (operation !== operationRef.current) return;
+      setError("Falló el procesamiento local de la imagen.");
+      setBusy(false);
+      worker.terminate();
+      workerRef.current = null;
+    };
+    worker.postMessage({ rgba: imageData.data.buffer, width: canvas.width, height: canvas.height, profile, numQuestions, numOptions, markers }, [imageData.data.buffer]);
+  }
+
   async function processFile(file?: File) {
     if (reviewHasUnsavedChanges && !window.confirm("La revisión actual no está guardada. ¿Descartarla y procesar otra hoja?")) return;
     reset();
@@ -199,72 +353,73 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     try {
       const bitmap = await createImageBitmap(file);
       if (operation !== operationRef.current) { bitmap.close(); return; }
-      if (bitmap.height <= bitmap.width) {
-        bitmap.close();
-        setError("La foto debe estar en vertical. Gira el móvil y repite la captura.");
-        setBusy(false);
-        return;
-      }
-      const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
-      const width = Math.round(bitmap.width * scale);
-      const height = Math.round(bitmap.height * scale);
-      if (width < 600 || height < 800) {
+      if (Math.min(bitmap.width, bitmap.height) < 600) {
         bitmap.close();
         setError("La resolución es insuficiente. Acerca la cámara y repite la foto.");
         setBusy(false);
         return;
       }
-      const canvas = canvasRef.current;
-      const context = canvas?.getContext("2d", { willReadFrequently: true });
-      if (!canvas || !context) throw new Error("No se pudo preparar la imagen.");
-      canvas.width = width;
-      canvas.height = height;
-      context.drawImage(bitmap, 0, 0, width, height);
-      bitmap.close();
-      const imageData = context.getImageData(0, 0, width, height);
-      previewRef.current = URL.createObjectURL(file);
-      setPreview(previewRef.current);
-
-      const worker = new Worker(new URL("@/lib/omr/worker.ts", import.meta.url));
-      workerRef.current = worker;
-      worker.onmessage = (event: MessageEvent<{ type: string; value?: number; message?: string; result?: OmrResult }>) => {
-        if (operation !== operationRef.current) return;
-        if (event.data.type === "progress") setProgress(event.data.value ?? 0);
-        if (event.data.type === "result" && event.data.result) {
-          setResult(event.data.result);
-          setReviewHasUnsavedChanges(true);
-          setReview(event.data.result.answers.map((answer) => ({
-            q: answer.q,
-            detected: answer.detected,
-            confidence: answer.confidence,
-            flag: answer.flag,
-            selectedOption: answer.detected,
-            confirmed: false,
-          })));
-          setBusy(false);
-          worker.terminate();
-          workerRef.current = null;
-        }
-        if (event.data.type === "error") {
-          setError(event.data.message ?? "No se pudo leer la hoja.");
-          setBusy(false);
-          worker.terminate();
-          workerRef.current = null;
-        }
-      };
-      worker.onerror = () => {
-        if (operation !== operationRef.current) return;
-        setError("Falló el procesamiento local de la imagen.");
-        setBusy(false);
-        worker.terminate();
-        workerRef.current = null;
-      };
-      worker.postMessage({ rgba: imageData.data.buffer, width, height, profile, numQuestions, numOptions }, [imageData.data.buffer]);
+      bitmapRef.current = bitmap;
+      setImageLoaded(true);
+      renderAndAnalyze(bitmap.height <= bitmap.width ? 90 : 0, { brightness: 0, contrast: 1 });
     } catch (cause) {
       if (operation !== operationRef.current) return;
       setError(cause instanceof Error ? cause.message : "No se pudo abrir la imagen.");
       setBusy(false);
     }
+  }
+
+  function rotateImage(delta: number) {
+    if (!bitmapRef.current) return;
+    renderAndAnalyze((rotation + delta + 360) % 360, tone);
+  }
+
+  function startManualMarkers() {
+    const canvas = canvasRef.current;
+    if (!canvas || !imageLoaded) return;
+    setManualMode(true);
+    setMarkerClicks([]);
+    setDetectedMarkers(null);
+    setError("");
+    setResult(null);
+    setReview(null);
+    setBusy(false);
+    setProgress(0);
+  }
+
+  function onCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
+    if (!manualMode) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
+    const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+    const context = canvas.getContext("2d");
+    if (context) {
+      context.save();
+      context.fillStyle = "#1d3557";
+      context.beginPath();
+      context.arc(x, y, Math.max(4, canvas.width / 250), 0, Math.PI * 2);
+      context.fill();
+      context.restore();
+    }
+    const next = [...markerClicks, { x, y }];
+    if (next.length < 4) {
+      setMarkerClicks(next);
+      setError("Marca " + next.length + " de 4 esquinas.");
+      return;
+    }
+    const markers = markersFromPoints(next);
+    if (!markers) {
+      setMarkerClicks([]);
+      setError("Esas cuatro esquinas no forman un área válida. Vuelve a marcarlas.");
+      return;
+    }
+    setMarkerClicks([]);
+    setDetectedMarkers(markers);
+    setManualMode(false);
+    drawMarkers(markers);
+    startRead(markers);
   }
 
   async function createStudent(event: React.FormEvent<HTMLFormElement>) {
@@ -604,11 +759,25 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
         <input id="omr-camera" type="file" accept="image/*" capture="environment" disabled={busy || saving} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void processFile(file); }} />
         <label className="boton secundario" htmlFor="omr-image" aria-disabled={busy || saving}>Elegir imagen</label>
         <input id="omr-image" type="file" accept="image/*" disabled={busy || saving} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void processFile(file); }} />
-        {(preview || busy) && <button type="button" className="secundario" onClick={reset} disabled={busy || saving}>Reiniciar</button>}
+        {(imageLoaded || busy) && <button type="button" className="secundario" onClick={reset} disabled={busy || saving}>Reiniciar</button>}
       </div>
-      {/* eslint-disable-next-line @next/next/no-img-element -- URL local temporal: no debe pasar por el optimizador remoto. */}
-      {preview && <img src={preview} alt="Previsualización temporal de la hoja" className="omr-preview" />}
-      <canvas ref={canvasRef} hidden />
+      <canvas ref={canvasRef} className="omr-preview" hidden={!imageLoaded} aria-label="Hoja cargada. Toca las cuatro esquinas de las marcas cuando se solicite." onClick={onCanvasClick} style={imageLoaded ? (manualMode ? { cursor: "crosshair" } : undefined) : { display: "none" }} />
+      {imageLoaded && <div className="fila-acciones">
+        <button type="button" className="secundario" onClick={() => rotateImage(-90)} disabled={busy || saving}>Girar izquierda</button>
+        <button type="button" className="secundario" onClick={() => rotateImage(90)} disabled={busy || saving}>Girar derecha</button>
+        <button type="button" className="secundario" onClick={startManualMarkers} disabled={busy || saving}>Marcar esquinas</button>
+        <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving}>Releer marcas</button>
+      </div>}
+      {imageLoaded && <fieldset className="matriz-ajustes">
+        <legend>Retoque de imagen</legend>
+        <label htmlFor="omr-brightness">Brillo ({tone.brightness})</label>
+        <input id="omr-brightness" type="range" min={-60} max={60} step={2} value={tone.brightness} onChange={(event) => setTone((current) => ({ ...current, brightness: Number(event.target.value) }))} />
+        <label htmlFor="omr-contrast">Contraste ({tone.contrast.toFixed(2)}×)</label>
+        <input id="omr-contrast" type="range" min={0.6} max={1.8} step={0.05} value={tone.contrast} onChange={(event) => setTone((current) => ({ ...current, contrast: Number(event.target.value) }))} />
+        <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving}>Aplicar retoque y releer</button>
+      </fieldset>}
+      {manualMode && <p className="vacio" role="status">Marca las cuatro esquinas de las marcas de registro tocando la imagen, en cualquier orden.</p>}
+      {detectedMarkers && !manualMode && <p className="vacio" role="status">Se han localizado las cuatro marcas de registro.</p>}
       {busy && <p role="status">Procesando localmente… {progress}%</p>}
       {error && <p className="error" role="alert">{error}</p>}
       {result && <>

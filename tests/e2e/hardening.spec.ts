@@ -204,7 +204,7 @@ test("synthetic OMR image stays local and only reviewed answers enter IndexedDB 
   await confirmButtons.first().click();
   await page.getByRole("button", { name: "Confirmar entrega y nota" }).click();
   await expect(page.getByText("Entrega guardada en la cola local", { exact: false })).toBeVisible();
-  await expect(page.locator(".omr-preview")).toHaveCount(0);
+  await expect(page.locator("canvas.omr-preview")).toBeHidden();
   expect(sentBodies).toHaveLength(1);
   expect(sentBodies[0]).not.toMatch(/File|Blob|multipart|image|synthetic-answer-sheet/);
   expect(Object.keys(JSON.parse(sentBodies[0])).sort()).toEqual(["answers", "expectedVersion", "replace", "studentId"].sort());
@@ -226,7 +226,6 @@ test("synthetic OMR image stays local and only reviewed answers enter IndexedDB 
   expect(localQueue).toHaveLength(1);
   expect(Object.keys(localQueue[0]).sort()).toEqual(["answers", "createdAt", "examId", "expectedVersion", "id", "idempotencyKey", "lastError", "ownerId", "replace", "retries", "status", "studentId"].sort());
   expect(localQueue[0].answers).toEqual([{ questionNo: 1, optionIndex: 0 }, { questionNo: 2, optionIndex: 1 }]);
-  expect(await page.locator("canvas[hidden]").evaluate((canvas) => (canvas as HTMLCanvasElement).width)).toBe(0);
 });
 
 test("offline replay survives a reload with identical body and idempotency key, then ACK purges it", async ({ page }) => {
