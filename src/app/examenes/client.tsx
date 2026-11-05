@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { signOut } from "next-auth/react";
 import { purgeOwnerQueue, purgeQueuedResults } from "@/lib/offline-queue/indexed-db";
+import PasswordInput from "../password-input";
 
 type Exam = {
   id: string;
@@ -167,8 +168,7 @@ export default function ExamenesClient({ examenes, ownerId }: { examenes: Exam[]
           <p role="alert">{accountError || "La cuenta fue eliminada."}</p>
           <button type="button" className="peligro" onClick={() => void finishAccountRemoval()}>Reintentar purga local y cerrar sesión</button>
         </div> : <form onSubmit={eliminarCuenta}>
-          <label htmlFor="account-password">Contraseña actual</label>
-          <input id="account-password" name="account-password" type="password" autoComplete="current-password" required />
+          <PasswordInput id="account-password" name="account-password" label="Contraseña actual" autoComplete="current-password" required />
           <label htmlFor="account-confirmation">Escribe ELIMINAR CUENTA para confirmar</label>
           <input id="account-confirmation" name="account-confirmation" required pattern="ELIMINAR CUENTA" />
           {accountError && <p className="error" role="alert">{accountError}</p>}

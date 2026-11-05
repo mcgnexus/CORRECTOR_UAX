@@ -17,11 +17,13 @@ let deletedExamId = "";
 let pendingStudentId = "";
 let conflictStudentId = "";
 let ownerEmail = "";
+let adminId = "";
+let adminEmail = "";
 
-async function signIn(page: Page) {
+async function signIn(page: Page, email = ownerEmail) {
   await page.goto("/login");
-  await page.getByLabel("Correo electrónico").fill(ownerEmail);
-  await page.getByLabel("Contraseña").fill(password);
+  await page.getByLabel("Correo electrónico").fill(email);
+  await page.locator("#password").fill(password);
   await page.getByRole("button", { name: "Entrar" }).click();
   await page.waitForURL(/\/examenes$/, { timeout: 45_000 });
 }
@@ -112,6 +114,9 @@ test.beforeAll(async () => {
   const passwordHash = await hash(password, { memoryCost: 19_456, timeCost: 2, parallelism: 1 });
   const [user] = await db.insert(users).values({ name: "Playwright Owner", email: ownerEmail, passwordHash }).returning({ id: users.id });
   ownerId = user.id;
+  adminEmail = `admin-${nonce}@test.invalid`;
+  const [admin] = await db.insert(users).values({ name: "Playwright Admin", email: adminEmail, passwordHash, role: "admin" }).returning({ id: users.id });
+  adminId = admin.id;
   const [exam] = await db.insert(exams).values({ ownerId, title: "Hardening synthetic fixture", numQuestions: 2, numOptions: 4, status: "key_validated" }).returning({ id: exams.id });
   examId = exam.id;
   const [deletedExam] = await db.insert(exams).values({ ownerId, title: "Stale queue fixture", numQuestions: 2, numOptions: 4, status: "key_validated" }).returning({ id: exams.id });
@@ -148,12 +153,19 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   if (ownerId) await db.delete(users).where(eq(users.id, ownerId));
+  if (adminId) await db.delete(users).where(eq(users.id, adminId));
   await closeDb();
 });
 
-test("login page meets automated WCAG 2.2 A/AA axe rules", async ({ page }) => {
+test("login page meets automated WCAG 2.2 A/AA axe rules and toggles password visibility", async ({ page }) => {
   await page.goto("/login");
   await assertNoAxeViolations(page);
+  await page.locator("#password").fill("clave-de-prueba");
+  await expect(page.locator("#password")).toHaveAttribute("type", "password");
+  await page.getByRole("button", { name: "Mostrar contraseña" }).click();
+  await expect(page.locator("#password")).toHaveAttribute("type", "text");
+  await page.getByRole("button", { name: "Ocultar contraseña" }).click();
+  await expect(page.locator("#password")).toHaveAttribute("type", "password");
 });
 
 test("DeepSeek UI uses the loopback stub only after explicit consent", async ({ page }) => {
@@ -198,9 +210,10 @@ test("synthetic OMR image stays local and only reviewed answers enter IndexedDB 
   await page.locator("#omr-image").setInputFiles({ name: "synthetic-answer-sheet.png", mimeType: "image/png", buffer: imageBytes });
   await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
   await assertNoAxeViolations(page);
-  await page.locator("#omr-student").selectOption(pendingStudentId);
   await page.getByRole("button", { name: "Confirmar todas las respuestas" }).click();
   await expect(page.getByText("Confirmada", { exact: true })).toHaveCount(2);
+  await page.locator("#omr-student").selectOption(pendingStudentId);
+  await expect(page.getByRole("button", { name: "Confirmar entrega y nota" })).toBeEnabled();
   await page.getByRole("button", { name: "Confirmar entrega y nota" }).click();
   await expect(page.getByText("Entrega guardada en la cola local", { exact: false })).toBeVisible();
   await expect(page.locator("canvas.omr-preview")).toBeHidden();
@@ -369,6 +382,30 @@ test("dashboard discards an offline queue item after its exam was deleted on ano
   await expect(page.getByText("Se descartó una entrega local porque el examen o alumno ya no existe.")).toBeVisible();
   const remaining = await readQueueRows(page);
   expect(remaining).toEqual([]);
+});
+
+test("descarga el informe de corrección de un alumno y rechaza alumnos ajenos", async ({ page }) => {
+  await signIn(page);
+  const response = await page.request.get(`/api/exams/${examId}/export?type=report&format=pdf&studentId=${conflictStudentId}`);
+  expect(response.status()).toBe(200);
+  expect(response.headers()["content-type"]).toContain("application/pdf");
+  const body = await response.body();
+  expect(body.subarray(0, 5).toString()).toBe("%PDF-");
+  const csv = await page.request.get(`/api/exams/${examId}/export?type=report&format=csv&studentId=${conflictStudentId}`);
+  expect(csv.status()).toBe(200);
+  expect(await csv.text()).toContain("Corregido");
+  const foreign = await page.request.get(`/api/exams/${examId}/export?type=report&format=pdf&studentId=${randomUUID()}`);
+  expect(foreign.status()).toBe(404);
+});
+
+test("el administrador accede a exámenes de otro profesor", async ({ page }) => {
+  await signIn(page, adminEmail);
+  await expect(page.getByText("Administrador", { exact: false })).toBeVisible();
+  await page.goto(`/examenes/${examId}`);
+  await expect(page.getByRole("heading", { name: "Hardening synthetic fixture" })).toBeVisible();
+  const report = await page.request.get(`/api/exams/${examId}/export?type=report&format=csv`);
+  expect(report.status()).toBe(200);
+  expect(await report.text()).toContain("Conflict synthetic student");
 });
 
 test("exam page axe audit and account deletion purge this owner's local partition", async ({ page }) => {

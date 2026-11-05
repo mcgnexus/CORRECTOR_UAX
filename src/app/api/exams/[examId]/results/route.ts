@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { auth } from "@/auth";
+import { resolveExamAccess } from "@/lib/access";
 import { saveOwnedReviewedResult } from "@/lib/exam-results";
 import { readJsonLimited } from "@/lib/http";
 
@@ -14,10 +15,13 @@ export async function POST(request: Request, context: RouteContext) {
   if (!id.success) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
   const idempotencyKey = request.headers.get("Idempotency-Key") ?? "";
   if (!z.string().uuid().safeParse(idempotencyKey).success) return Response.json({ error: "Falta una clave Idempotency-Key UUID válida." }, { status: 400 });
+  const access = await resolveExamAccess(session.user.id, id.data);
+  if (!access) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
+
   const input = await readJsonLimited(request, 24_000);
   if (input.status === "too_large") return Response.json({ error: "La lectura supera el límite de tamaño." }, { status: 413 });
   if (input.status === "invalid") return Response.json({ error: "Solicitud no válida." }, { status: 400 });
-  const result = await saveOwnedReviewedResult(session.user.id, id.data, input.value, idempotencyKey);
+  const result = await saveOwnedReviewedResult(access.ownerId, id.data, input.value, idempotencyKey);
   if (result.status === "not_found") return Response.json({ error: "Examen no encontrado." }, { status: 404 });
   if (result.status === "student_not_found") return Response.json({ error: "Alumno no encontrado en este examen." }, { status: 404 });
   if (result.status === "exists") return Response.json({ error: "Este alumno ya tiene una lectura. Confirma el reemplazo.", code: "exists" }, { status: 409 });

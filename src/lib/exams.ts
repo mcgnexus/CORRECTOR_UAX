@@ -2,6 +2,14 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { answerKeyItems, examResults, examStudents, exams } from "@/db/schema";
 import type { ExamInput } from "@/lib/validation";
+import { isAdminUser } from "@/lib/access";
+
+export async function listAccessibleExams(userId: string) {
+  if (await isAdminUser(userId)) {
+    return getDb().select().from(exams).orderBy(desc(exams.updatedAt));
+  }
+  return listOwnedExams(userId);
+}
 
 export async function listOwnedExams(ownerId: string) {
   return getDb()

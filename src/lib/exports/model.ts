@@ -1,3 +1,5 @@
+import { DEFAULT_SCORING_RULE, scoreBreakdown, type ScoreBreakdown, type ScoringRule } from "@/lib/scoring";
+
 export type ExportExam = {
   id: string;
   title: string;
@@ -22,7 +24,7 @@ export type ExportStudent = {
   score: string | null;
 };
 
-export type ExportBundle = { exam: ExportExam; key: ExportKeyItem[]; students: ExportStudent[] };
+export type ExportBundle = { exam: ExportExam; key: ExportKeyItem[]; students: ExportStudent[]; rule?: ScoringRule };
 export type ExportState = "Corregido" | "Pendiente" | "Pendiente de clave" | "Pendiente de cálculo";
 
 export type ResultExportRow = {
@@ -106,4 +108,87 @@ export function safeFilename(value: string) {
   const normalized = value.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   const slug = normalized.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
   return slug || "examen";
+}
+
+export type ReportOutcome = "Acierto" | "Fallo" | "Blanco" | "Sin entrega" | "Pendiente de clave";
+
+export type ReportQuestionRow = {
+  questionNo: number;
+  given: string;
+  correct: string | null;
+  outcome: ReportOutcome;
+  points: string | null;
+};
+
+export type ReportStudentRow = {
+  student: ExportStudent;
+  state: ExportState;
+  questions: ReportQuestionRow[];
+  breakdown: ScoreBreakdown | null;
+};
+
+const ANSWER_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+export function reportStudentRows(bundle: ExportBundle): ReportStudentRow[] {
+  const rows = resultExportRows(bundle);
+  const validated = isKeyValidated(bundle);
+  const key = new Map(bundle.key.map((item) => [item.questionNo, item.correctOption]));
+  const rule = bundle.rule ?? DEFAULT_SCORING_RULE;
+
+  return rows.map((row) => {
+    const byQuestion = new Map((row.student.answers ?? []).map((answer) => [answer.questionNo, answer.optionIndex]));
+    const questions = Array.from({ length: bundle.exam.numQuestions }, (_, index) => {
+      const questionNo = index + 1;
+      const correct = validated ? key.get(questionNo) ?? null : null;
+      if (!row.student.answers) {
+        return { questionNo, given: "Sin entrega", correct, outcome: "Sin entrega" as const, points: null };
+      }
+      const option = byQuestion.get(questionNo);
+      const given = option === undefined ? "—" : option === null ? "En blanco" : ANSWER_LABELS[option] ?? "—";
+      if (!validated) {
+        return { questionNo, given, correct, outcome: "Pendiente de clave" as const, points: null };
+      }
+      if (option === undefined) {
+        return { questionNo, given, correct, outcome: "Sin entrega" as const, points: null };
+      }
+      if (option === null) {
+        return { questionNo, given, correct, outcome: "Blanco" as const, points: rule.pointsBlank };
+      }
+      const outcome = given === correct ? "Acierto" as const : "Fallo" as const;
+      return {
+        questionNo,
+        given,
+        correct,
+        outcome,
+        points: outcome === "Acierto" ? rule.pointsCorrect : rule.pointsWrong,
+      };
+    });
+
+    let breakdown: ScoreBreakdown | null = null;
+    if (row.state === "Corregido" && row.correct !== null && row.wrong !== null && row.blank !== null) {
+      const computed = scoreBreakdown({
+        correct: row.correct,
+        wrong: row.wrong,
+        blank: row.blank,
+        numQuestions: bundle.exam.numQuestions,
+        rule,
+      });
+      if (computed.success) breakdown = computed.breakdown;
+    }
+
+    return { student: row.student, state: row.state, questions, breakdown };
+  });
+}
+
+export function reportCalculationRows(row: ReportStudentRow): Array<[string, string]> {
+  const breakdown = row.breakdown;
+  if (!breakdown) return [["Cálculo", "Pendiente: la entrega no está corregida o falta la clave validada."]];
+  return [
+    [`Aciertos: ${breakdown.correct} × ${breakdown.pointsCorrect}`, breakdown.correctSubtotal],
+    [`Fallos: ${breakdown.wrong} × ${breakdown.pointsWrong}`, breakdown.wrongSubtotal],
+    [`Blancos: ${breakdown.blank} × ${breakdown.pointsBlank}`, breakdown.blankSubtotal],
+    ["Suma bruta", breakdown.rawScore],
+    [`Bruto acotado (0 … ${breakdown.maxRaw})`, breakdown.boundedRaw],
+    [`Nota = bruto acotado / ${breakdown.maxRaw} × ${breakdown.maxScore}`, breakdown.score],
+  ];
 }

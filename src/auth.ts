@@ -38,7 +38,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!(await checkAuthRateLimit(parsed.data.email, ip))) return null;
 
         const [user] = await getDb()
-          .select({ id: users.id, name: users.name, email: users.email, passwordHash: users.passwordHash })
+          .select({ id: users.id, name: users.name, email: users.email, passwordHash: users.passwordHash, role: users.role })
           .from(users)
           .where(eq(users.email, parsed.data.email))
           .limit(1);
@@ -58,17 +58,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!passwordMatches) return null;
 
         await clearAuthRateLimit(parsed.data.email, ip);
-        return { id: user.id, name: user.name, email: user.email };
+        return { id: user.id, name: user.name, email: user.email, role: user.role === "admin" ? "admin" : "teacher" };
       },
     }),
   ],
   callbacks: {
     jwt({ token, user }) {
-      if (user) token.sub = user.id;
+      if (user) {
+        token.sub = user.id;
+        token.role = user.role;
+      }
       return token;
     },
     session({ session, token }) {
-      if (session.user && token.sub) session.user.id = token.sub;
+      if (session.user && token.sub) {
+        session.user.id = token.sub;
+        session.user.role = token.role === "admin" ? "admin" : "teacher";
+      }
       return session;
     },
   },

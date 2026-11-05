@@ -1,5 +1,5 @@
 import PDFDocument from "pdfkit";
-import { isKeyValidated, keyExportRows, resultExportRows, resultExportSummary, type ExportBundle } from "./model";
+import { isKeyValidated, keyExportRows, reportCalculationRows, reportStudentRows, resultExportRows, resultExportSummary, type ExportBundle, type ReportStudentRow } from "./model";
 
 type PdfDocument = InstanceType<typeof PDFDocument>;
 
@@ -151,5 +151,98 @@ export function buildResultsPdf(bundle: ExportBundle) {
         document.font("Helvetica").fontSize(9).fillColor(color).text(`P${index + 1}: ${answer}`, x, y, { width: colWidth });
       }
     }
+  });
+}
+
+function reportTableHeader(document: PdfDocument, top: number) {
+  const columns = [
+    { label: "Pregunta", x: 44, width: 52 },
+    { label: "Respuesta", x: 98, width: 82 },
+    { label: "Correcta", x: 182, width: 72 },
+    { label: "Resultado", x: 256, width: 118 },
+    { label: "Puntos", x: 376, width: 64 },
+  ];
+  document.font("Helvetica-Bold").fontSize(9).fillColor("#ffffff");
+  document.save().fillColor("#234d68").rect(44, top, document.page.width - 88, 16).fill().restore();
+  for (const column of columns) document.fillColor("#ffffff").text(column.label, column.x + 2, top + 4, { width: column.width - 4 });
+  document.fillColor("#222222");
+  return columns;
+}
+
+function renderReportStudent(document: PdfDocument, bundle: ExportBundle, row: ReportStudentRow) {
+  document.addPage();
+  examHeading(document, "Informe de corrección", bundle.exam);
+  document.font("Helvetica-Bold").fontSize(16).fillColor("#17384f").text(row.student.name);
+  document.font("Helvetica").fontSize(10).fillColor("#333333").text("DNI: " + row.student.dni + " · " + row.state);
+  document.moveDown(0.4);
+  if (row.breakdown) {
+    const summary = [
+      ["Aciertos", String(row.breakdown.correct)],
+      ["Fallos", String(row.breakdown.wrong)],
+      ["Blancos", String(row.breakdown.blank)],
+      ["Nota", row.breakdown.score],
+    ];
+    const start = document.y;
+    const width = (document.page.width - 88) / summary.length;
+    summary.forEach(([label, value], index) => {
+      const x = 44 + index * width;
+      document.font("Helvetica").fontSize(8).fillColor("#555555").text(label, x, start, { width: width - 4 });
+      document.font("Helvetica-Bold").fontSize(12).fillColor("#222222").text(value, x, start + 12, { width: width - 4 });
+    });
+    document.y = start + 34;
+  }
+  document.moveDown(0.3).font("Helvetica-Bold").fontSize(11).fillColor("#222222").text("Detalle por pregunta");
+  const top = document.y + 6;
+  let columns = reportTableHeader(document, top);
+  let y = top + 22;
+  const lineHeight = 13;
+  for (const question of row.questions) {
+    if (y + lineHeight > document.page.height - 120) {
+      document.addPage();
+      document.font("Helvetica-Bold").fontSize(12).fillColor("#17384f").text("Informe de corrección · continuación");
+      document.font("Helvetica").fontSize(9).fillColor("#555555").text(row.student.name + " · DNI: " + row.student.dni);
+      const continuationTop = document.y + 6;
+      columns = reportTableHeader(document, continuationTop);
+      y = continuationTop + 22;
+    }
+    const values = [String(question.questionNo), question.given, question.correct ?? "—", question.outcome, question.points ?? "—"];
+    const color = question.outcome === "Acierto" ? "#26733a" : question.outcome === "Fallo" ? "#9f2d2d" : "#222222";
+    document.font("Helvetica").fontSize(9).fillColor(color);
+    columns.forEach((column, index) => document.text(values[index], column.x + 2, y, { width: column.width - 4, lineBreak: false }));
+    y += lineHeight;
+  }
+  document.y = y;
+  document.moveDown(0.6);
+  if (document.y > document.page.height - 150) document.addPage();
+  document.font("Helvetica-Bold").fontSize(11).fillColor("#222222").text("Cálculo de la nota");
+  document.moveDown(0.3);
+  for (const [label, value] of reportCalculationRows(row)) {
+    const start = document.y;
+    document.font("Helvetica").fontSize(9).fillColor("#333333").text(label, 56, start, { width: 340 });
+    document.font("Helvetica-Bold").fontSize(9).fillColor("#222222").text(value, 400, start, { width: document.page.width - 456, align: "right" });
+    document.y = start + 13;
+  }
+}
+
+export function buildReportPdf(bundle: ExportBundle) {
+  const rows = reportStudentRows(bundle);
+  return collectPdf((document) => {
+    document.addPage();
+    examHeading(document, "Informe de corrección", bundle.exam);
+    document.font("Helvetica").fontSize(11).text(`${bundle.exam.numQuestions} preguntas · ${bundle.exam.numOptions} opciones`);
+    document.moveDown(0.6);
+    document.font("Helvetica-Bold").fontSize(12).text("Contenido");
+    document.moveDown(0.3);
+    document.font("Helvetica").fontSize(10).fillColor("#333333").text(
+      "Cada alumno incluye el detalle de respuestas, la respuesta correcta de cada fallo y el cálculo paso a paso de la nota.",
+      { width: document.page.width - 88 },
+    );
+    if (!isKeyValidated(bundle)) {
+      document.moveDown(0.6).save().fillColor("#fff1cc").rect(44, document.y, document.page.width - 88, 34).fill().restore();
+      document.fillColor("#8a4b08").font("Helvetica-Bold").fontSize(11).text("Clave pendiente: el detalle y la nota no están disponibles.", 54, document.y + 10, { width: document.page.width - 108 });
+      document.moveDown(2.4);
+    }
+    document.font("Helvetica").fontSize(10).fillColor("#333333").text(`Alumnos incluidos: ${rows.length}`);
+    for (const row of rows) renderReportStudent(document, bundle, row);
   });
 }

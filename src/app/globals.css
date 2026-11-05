@@ -446,3 +446,41 @@ textarea {
 a {
   color: var(--azul);
 }
+
+.password-field {
+  display: flex;
+  align-items: stretch;
+  gap: 0.4rem;
+}
+
+.password-field input {
+  flex: 1;
+  min-width: 0;
+}
+
+.password-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  padding: 0;
+  color: var(--azul);
+  background: #fff;
+  border: 1px solid var(--borde);
+}
+
+.password-toggle svg {
+  pointer-events: none;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

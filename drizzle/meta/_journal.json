@@ -36,6 +36,13 @@
       "when": 1793818426446,
       "tag": "0004_natural_patch",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793882249403,
+      "tag": "0005_admin_role",
+      "breakpoints": true
     }
   ]
 }

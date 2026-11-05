@@ -1,5 +1,5 @@
 import { auth } from "@/auth";
-import { createOwnedExam, listOwnedExams } from "@/lib/exams";
+import { createOwnedExam, listAccessibleExams } from "@/lib/exams";
 import { examCreateSchema } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const session = await auth();
   if (!session?.user?.id) return Response.json({ error: "No autenticado." }, { status: 401 });
-  return Response.json(await listOwnedExams(session.user.id));
+  return Response.json(await listAccessibleExams(session.user.id));
 }
 
 export async function POST(request: Request) {

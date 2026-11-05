@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import PasswordInput from "../password-input";
 import { useRouter } from "next/navigation";
 
 export default function RegistroPage() {
@@ -41,16 +42,7 @@ export default function RegistroPage() {
           <input id="name" name="name" type="text" autoComplete="name" required minLength={2} maxLength={100} />
           <label htmlFor="email">Correo electrónico</label>
           <input id="email" name="email" type="email" autoComplete="email" required />
-          <label htmlFor="password">Contraseña</label>
-          <input
-            id="password"
-            name="password"
-            type="password"
-            autoComplete="new-password"
-            required
-            minLength={12}
-            maxLength={128}
-          />
+          <PasswordInput id="password" name="password" label="Contraseña" autoComplete="new-password" required minLength={12} maxLength={128} />
           {error ? <p className="error" role="alert">{error}</p> : null}
           <div className="fila-acciones" style={{ marginTop: "1rem" }}>
             <button type="submit" disabled={enviando}>

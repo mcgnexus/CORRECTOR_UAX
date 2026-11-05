@@ -14,7 +14,8 @@ import {
   scoringRules,
   users,
 } from "../../src/db/schema";
-import { findOwnedExam } from "../../src/lib/exams";
+import { findOwnedExam, listAccessibleExams, listOwnedExams } from "../../src/lib/exams";
+import { isAdminUser, resolveExamAccess } from "../../src/lib/access";
 import { deleteOwnedReviewedResult, deleteOwnedStudent, saveOwnedReviewedResult } from "../../src/lib/exam-results";
 import { clearAuthRateLimit, purgeExpiredAuthAttempts } from "../../src/lib/rate-limit";
 
@@ -63,10 +64,19 @@ test("ownership isolation and student, exam, and account cascades", async () => 
   const nonce = randomUUID();
   const [owner] = await db.insert(users).values({ name: "Test Owner", email: `${nonce}@test.invalid`, passwordHash: "not-used" }).returning({ id: users.id });
   const [otherOwner] = await db.insert(users).values({ name: "Other Owner", email: `${randomUUID()}@test.invalid`, passwordHash: "not-used" }).returning({ id: users.id });
+  const [admin] = await db.insert(users).values({ name: "Admin", email: `${randomUUID()}@test.invalid`, passwordHash: "not-used", role: "admin" }).returning({ id: users.id });
   try {
     const [exam] = await db.insert(exams).values({ ownerId: owner.id, title: "Cascade fixture", numQuestions: 2, numOptions: 4, status: "key_validated" }).returning({ id: exams.id });
     assert.ok(await findOwnedExam(owner.id, exam.id));
     assert.equal(await findOwnedExam(otherOwner.id, exam.id), undefined);
+    assert.equal(await isAdminUser(otherOwner.id), false);
+    assert.equal(await isAdminUser(admin.id), true);
+    assert.deepEqual(await resolveExamAccess(owner.id, exam.id), { ownerId: owner.id, isAdmin: false });
+    assert.equal(await resolveExamAccess(otherOwner.id, exam.id), undefined);
+    assert.deepEqual(await resolveExamAccess(admin.id, exam.id), { ownerId: owner.id, isAdmin: true });
+    assert.ok((await listAccessibleExams(admin.id)).some((item) => item.id === exam.id));
+    assert.equal((await listAccessibleExams(otherOwner.id)).some((item) => item.id === exam.id), false);
+    assert.equal((await listOwnedExams(otherOwner.id)).some((item) => item.id === exam.id), false);
 
     const [studentA, studentB, studentC] = await db.insert(examStudents).values([
       { examId: exam.id, name: "Fixture A", dni: `${nonce.slice(0, 8)}A` },
@@ -127,5 +137,6 @@ test("ownership isolation and student, exam, and account cascades", async () => 
   } finally {
     await db.delete(users).where(eq(users.id, owner.id));
     await db.delete(users).where(eq(users.id, otherOwner.id));
+    await db.delete(users).where(eq(users.id, admin.id));
   }
 });

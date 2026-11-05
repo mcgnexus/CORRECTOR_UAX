@@ -25,6 +25,7 @@ export const users = pgTable(
     name: varchar("name", { length: 100 }).notNull(),
     email: varchar("email", { length: 254 }).notNull(),
     passwordHash: text("password_hash").notNull(),
+    role: varchar("role", { length: 16 }).notNull().default("teacher"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [uniqueIndex("users_email_lower_unique").on(sql`lower(${table.email})`)],

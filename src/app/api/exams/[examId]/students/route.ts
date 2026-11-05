@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { auth } from "@/auth";
+import { resolveExamAccess } from "@/lib/access";
 import { createOwnedStudent, listOwnedExamRoster } from "@/lib/exam-results";
 import { findOwnedExam } from "@/lib/exams";
 import { readJsonLimited } from "@/lib/http";
@@ -17,8 +18,9 @@ export async function GET(_request: Request, context: RouteContext) {
   if (!session?.user?.id) return Response.json({ error: "No autenticado." }, { status: 401 });
   const id = await ownedExamId(context);
   if (!id.success) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
-  if (!await findOwnedExam(session.user.id, id.data)) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
-  return Response.json({ students: await listOwnedExamRoster(session.user.id, id.data) });
+  const access = await resolveExamAccess(session.user.id, id.data);
+  if (!access || !await findOwnedExam(access.ownerId, id.data)) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
+  return Response.json({ students: await listOwnedExamRoster(access.ownerId, id.data) });
 }
 
 export async function POST(request: Request, context: RouteContext) {
@@ -26,10 +28,13 @@ export async function POST(request: Request, context: RouteContext) {
   if (!session?.user?.id) return Response.json({ error: "No autenticado." }, { status: 401 });
   const id = await ownedExamId(context);
   if (!id.success) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
+  const access = await resolveExamAccess(session.user.id, id.data);
+  if (!access) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
+
   const input = await readJsonLimited(request, 8_000);
   if (input.status === "too_large") return Response.json({ error: "La solicitud supera el límite." }, { status: 413 });
   if (input.status === "invalid") return Response.json({ error: "Solicitud no válida." }, { status: 400 });
-  const result = await createOwnedStudent(session.user.id, id.data, input.value);
+  const result = await createOwnedStudent(access.ownerId, id.data, input.value);
   if (result.status === "not_found") return Response.json({ error: "Examen no encontrado." }, { status: 404 });
   if (result.status === "invalid") return Response.json({ error: result.message }, { status: 400 });
   if (result.status === "duplicate") return Response.json({ error: "Ya existe un alumno con ese DNI en este examen." }, { status: 409 });

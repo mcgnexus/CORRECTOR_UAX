@@ -3,13 +3,14 @@ import { isKeyValidated } from "./model";
 
 export type ExportRequest =
   | { type: "key"; format: "csv" | "xlsx" | "pdf" | "json"; delimiter: CsvDelimiter }
-  | { type: "results"; format: "csv" | "xlsx" | "pdf"; delimiter: CsvDelimiter };
+  | { type: "results"; format: "csv" | "xlsx" | "pdf"; delimiter: CsvDelimiter }
+  | { type: "report"; format: "csv" | "xlsx" | "pdf"; delimiter: CsvDelimiter; studentId?: string };
 
 export function parseExportRequest(params: URLSearchParams): ExportRequest | undefined {
   const type = params.get("type");
   const format = params.get("format");
   const rawDelimiter = params.get("delimiter");
-  if (type !== "key" && type !== "results") return undefined;
+  if (type !== "key" && type !== "results" && type !== "report") return undefined;
   if (rawDelimiter !== null && rawDelimiter !== "," && rawDelimiter !== ";") return undefined;
   const delimiter: CsvDelimiter = rawDelimiter === "," ? "," : ";";
   if (type === "key" && (format === "csv" || format === "xlsx" || format === "pdf" || format === "json")) {
@@ -17,6 +18,11 @@ export function parseExportRequest(params: URLSearchParams): ExportRequest | und
   }
   if (type === "results" && (format === "csv" || format === "xlsx" || format === "pdf")) {
     return { type, format, delimiter };
+  }
+  if (type === "report" && (format === "csv" || format === "xlsx" || format === "pdf")) {
+    const studentId = params.get("studentId");
+    if (studentId !== null && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(studentId)) return undefined;
+    return { type, format, delimiter, ...(studentId ? { studentId } : {}) };
   }
   return undefined;
 }

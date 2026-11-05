@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { auth } from "@/auth";
+import { resolveExamAccess } from "@/lib/access";
 import { deleteOwnedMatrixProfile, getOwnedMatrixProfile, saveOwnedMatrixProfile } from "@/lib/exam-matrix";
 import { readJsonLimited } from "@/lib/http";
 
@@ -19,7 +20,9 @@ export async function GET(_request: Request, context: RouteContext) {
   const id = await ownedExamId(context);
   if (!id.success) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
 
-  const profile = await getOwnedMatrixProfile(session.user.id, id.data);
+  const access = await resolveExamAccess(session.user.id, id.data);
+  if (!access) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
+  const profile = await getOwnedMatrixProfile(access.ownerId, id.data);
   return Response.json({ profile });
 }
 
@@ -34,7 +37,9 @@ export async function PUT(request: Request, context: RouteContext) {
   if (input.status === "too_large") return Response.json({ error: "La calibración supera el límite de tamaño." }, { status: 413 });
   if (input.status === "invalid") return Response.json({ error: "Solicitud no válida." }, { status: 400 });
 
-  const result = await saveOwnedMatrixProfile(session.user.id, id.data, input.value);
+  const access = await resolveExamAccess(session.user.id, id.data);
+  if (!access) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
+  const result = await saveOwnedMatrixProfile(access.ownerId, id.data, input.value);
   if (result.status === "not_found") return Response.json({ error: "Examen no encontrado." }, { status: 404 });
   if (result.status === "invalid") {
     return Response.json({ error: "La calibración no coincide con el examen.", problems: result.problems }, { status: 422 });
@@ -49,7 +54,9 @@ export async function DELETE(_request: Request, context: RouteContext) {
   const id = await ownedExamId(context);
   if (!id.success) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
 
-  const result = await deleteOwnedMatrixProfile(session.user.id, id.data);
+  const access = await resolveExamAccess(session.user.id, id.data);
+  if (!access) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
+  const result = await deleteOwnedMatrixProfile(access.ownerId, id.data);
   if (result.status === "not_found") return Response.json({ error: "Examen no encontrado." }, { status: 404 });
   return new Response(null, { status: 204 });
 }

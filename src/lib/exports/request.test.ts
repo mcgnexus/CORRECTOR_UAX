@@ -11,6 +11,10 @@ test("acepta solo combinaciones de exportación permitidas", () => {
   }
   assert.equal(parseExportRequest(new URLSearchParams({ type: "results", format: "json" })), undefined);
   assert.equal(parseExportRequest(new URLSearchParams({ type: "key", format: "xml" })), undefined);
+  for (const format of ["csv", "xlsx", "pdf"]) {
+    assert.equal(parseExportRequest(new URLSearchParams({ type: "report", format }))?.format, format);
+  }
+  assert.equal(parseExportRequest(new URLSearchParams({ type: "report", format: "json" })), undefined);
   assert.equal(parseExportRequest(new URLSearchParams({ type: "other", format: "csv" })), undefined);
 });
 
@@ -29,4 +33,12 @@ test("JSON de clave incluye estado y preguntas vacías sin datos personales", ()
   assert.equal(data.exam.status, "key_pending");
   assert.deepEqual(data.answers, [{ questionNo: 1, correctOption: null }, { questionNo: 2, correctOption: "C" }]);
   assert.equal(JSON.stringify(data).includes("DNI"), false);
+});
+
+test("el informe admite filtrar por un alumno con UUID válido", () => {
+  const studentId = "123e4567-e89b-42d3-a456-426614174000";
+  const parsed = parseExportRequest(new URLSearchParams({ type: "report", format: "pdf", studentId }));
+  assert.equal(parsed?.type, "report");
+  assert.equal(parsed?.type === "report" ? parsed.studentId : undefined, studentId);
+  assert.equal(parseExportRequest(new URLSearchParams({ type: "report", format: "pdf", studentId: "no-es-uuid" })), undefined);
 });

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { auth } from "@/auth";
+import { resolveExamAccess } from "@/lib/access";
 import { deepSeekAnswerKeyProvider } from "@/lib/answer-key-provider";
 import { generateKeyRequestSchema } from "@/lib/answer-key";
 import { findOwnedExam } from "@/lib/exams";
@@ -21,7 +22,9 @@ export async function POST(request: Request, context: RouteContext) {
   const id = idSchema.safeParse(examId);
   if (!id.success) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
 
-  const exam = await findOwnedExam(session.user.id, id.data);
+  const access = await resolveExamAccess(session.user.id, id.data);
+  if (!access) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
+  const exam = await findOwnedExam(access.ownerId, id.data);
   if (!exam) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
 
   const input = await readJsonLimited(request, MAX_BODY_BYTES);

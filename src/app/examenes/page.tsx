@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth, signOut } from "@/auth";
-import { listOwnedExams } from "@/lib/exams";
+import { listAccessibleExams } from "@/lib/exams";
 import ExamenesClient from "./client";
 import OfflineQueueSync from "./offline-queue-sync";
 
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export default async function ExamenesPage() {
   const session = await auth();
   if (!session?.user?.id) redirect("/login");
-  const examenes = await listOwnedExams(session.user.id);
+  const examenes = await listAccessibleExams(session.user.id);
 
   async function salir() {
     "use server";
@@ -20,7 +20,7 @@ export default async function ExamenesPage() {
     <>
       <header className="cabecera-app">
         <h1>Correctora UAX</h1>
-        <p className="usuario">{session.user.name ?? session.user.email}</p>
+        <p className="usuario">{session.user.name ?? session.user.email}{session.user.role === "admin" ? " · Administrador" : ""}</p>
         <form action={salir}>
           <button
             type="submit"

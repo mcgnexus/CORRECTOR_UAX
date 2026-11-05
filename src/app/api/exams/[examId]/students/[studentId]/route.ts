@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { auth } from "@/auth";
+import { resolveExamAccess } from "@/lib/access";
 import { deleteOwnedStudent } from "@/lib/exam-results";
 
 type RouteContext = { params: Promise<{ examId: string; studentId: string }> };
@@ -13,7 +14,9 @@ export async function DELETE(request: Request, context: RouteContext) {
   const student = idSchema.safeParse(studentId);
   if (!exam.success || !student.success) return Response.json({ error: "Alumno no encontrado." }, { status: 404 });
   const confirmResult = new URL(request.url).searchParams.get("confirmResult") === "true";
-  const result = await deleteOwnedStudent(session.user.id, exam.data, student.data, confirmResult);
+  const access = await resolveExamAccess(session.user.id, exam.data);
+  if (!access) return Response.json({ error: "Alumno no encontrado." }, { status: 404 });
+  const result = await deleteOwnedStudent(access.ownerId, exam.data, student.data, confirmResult);
   if (result.status === "not_found" || result.status === "student_not_found") return Response.json({ error: "Alumno no encontrado." }, { status: 404 });
   if (result.status === "result_requires_confirmation") return Response.json({ error: "Confirma que también se eliminará la lectura guardada." }, { status: 409 });
   return new Response(null, { status: 204 });

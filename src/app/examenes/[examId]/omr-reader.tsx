@@ -194,7 +194,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
 
   function selectReviewStudent(studentId: string) {
     pendingSaveRef.current = null;
-    if (studentId !== selectedStudentId && review) {
+    if (studentId !== selectedStudentId && selectedStudentId !== "" && review) {
       setReview((current) => current?.map((answer) => ({ ...answer, confirmed: false })) ?? null);
       setReviewHasUnsavedChanges(true);
     }
@@ -817,6 +817,13 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
         </div>
         <p className="vacio">Confirma cada pregunta o todas a la vez. La detección inicial es provisional; no se calcula nota ni se guarda la imagen.</p>
         {studentError && <p className="error" role="alert">{studentError}</p>}
+        {!keyValidated || !selectedStudentId || review.some((answer) => !answer.confirmed) ? <p className="vacio" role="status">
+          {!keyValidated
+            ? "Valida la clave del examen para habilitar el guardado."
+            : !selectedStudentId
+              ? "Selecciona un alumno del roster."
+              : "Confirma todas las respuestas o pulsa «Confirmar todas las respuestas»."}
+        </p> : null}
         <div className="fila-acciones"><button type="submit" disabled={saving || review.some((answer) => !answer.confirmed) || !selectedStudentId || !keyValidated}>{saving ? "Guardando y puntuando…" : "Confirmar entrega y nota"}</button><button type="button" className="secundario" onClick={clearScan} disabled={saving}>Cancelar revisión</button></div>
       </form>}
       </>}
@@ -837,7 +844,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     </div>
     {feedback && <p className="ok" role="status">{feedback}</p>}
     {students.length === 0 ? <p className="vacio">Todavía no hay alumnos en el roster.</p> : <div className="omr-table-wrap"><table><thead><tr><th>Alumno</th><th>DNI</th><th>Estado</th><th>Aciertos</th><th>Fallos</th><th>Blancos</th><th>Bruto</th><th>Nota</th><th>Acciones</th></tr></thead><tbody>
-      {students.map((student) => <tr key={student.id}><td>{student.name}</td><td>{student.dni}</td><td>{student.savedAt ? student.score === null ? "Puntuación pendiente de validar" : `Corregido · ${new Date(student.savedAt).toLocaleString("es-ES")}` : "Pendiente"}</td><td>{student.correct ?? "—"}</td><td>{student.wrong ?? "—"}</td><td>{student.blank ?? "—"}</td><td>{student.rawScore ?? "—"}</td><td>{student.score ?? "—"}</td><td><div className="fila-acciones">{student.savedAt && <><button type="button" className="secundario" onClick={() => editSaved(student)} disabled={!keyValidated}>Abrir / editar</button><button type="button" className="peligro" onClick={() => void deleteResult(student)}>Eliminar entrega</button></>}<button type="button" className="peligro" onClick={() => void deleteStudent(student)}>Eliminar alumno</button></div></td></tr>)}
+      {students.map((student) => <tr key={student.id}><td>{student.name}</td><td>{student.dni}</td><td>{student.savedAt ? student.score === null ? "Puntuación pendiente de validar" : `Corregido · ${new Date(student.savedAt).toLocaleString("es-ES")}` : "Pendiente"}</td><td>{student.correct ?? "—"}</td><td>{student.wrong ?? "—"}</td><td>{student.blank ?? "—"}</td><td>{student.rawScore ?? "—"}</td><td>{student.score ?? "—"}</td><td><div className="fila-acciones">{student.savedAt && <><a className="export-link" href={`/api/exams/${examId}/export?type=report&format=pdf&studentId=${student.id}`}>Informe PDF</a><button type="button" className="secundario" onClick={() => editSaved(student)} disabled={!keyValidated}>Abrir / editar</button><button type="button" className="peligro" onClick={() => void deleteResult(student)}>Eliminar entrega</button></>}<button type="button" className="peligro" onClick={() => void deleteStudent(student)}>Eliminar alumno</button></div></td></tr>)}
     </tbody></table></div>}
     {studentError && !review && <p className="error" role="alert">{studentError}</p>}
   </section>

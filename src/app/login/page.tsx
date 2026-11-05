@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
+import PasswordInput from "../password-input";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -36,8 +37,7 @@ export default function LoginPage() {
         <form onSubmit={onSubmit}>
           <label htmlFor="email">Correo electrónico</label>
           <input id="email" name="email" type="email" autoComplete="email" required />
-          <label htmlFor="password">Contraseña</label>
-          <input id="password" name="password" type="password" autoComplete="current-password" required />
+          <PasswordInput id="password" name="password" label="Contraseña" autoComplete="current-password" required />
           {error ? <p className="error" role="alert">{error}</p> : null}
           <div className="fila-acciones" style={{ marginTop: "1rem" }}>
             <button type="submit" disabled={enviando}>

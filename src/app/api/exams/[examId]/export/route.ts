@@ -1,13 +1,15 @@
 import { z } from "zod";
 import { auth } from "@/auth";
+import { resolveExamAccess } from "@/lib/access";
 import { listOwnedAnswerKey } from "@/lib/exam-keys";
 import { listOwnedExamRoster } from "@/lib/exam-results";
+import { getOwnedScoringRule } from "@/lib/exam-scoring";
 import { findOwnedExam } from "@/lib/exams";
-import { buildKeyCsv, buildResultsCsv } from "@/lib/exports/csv";
-import { buildKeyPdf, buildResultsPdf } from "@/lib/exports/pdf";
+import { buildKeyCsv, buildReportCsv, buildResultsCsv } from "@/lib/exports/csv";
+import { buildKeyPdf, buildReportPdf, buildResultsPdf } from "@/lib/exports/pdf";
 import { exportMimeType, parseExportRequest, buildKeyJson } from "@/lib/exports/request";
 import { safeFilename, type ExportBundle } from "@/lib/exports/model";
-import { buildKeyXlsx, buildResultsXlsx } from "@/lib/exports/xlsx";
+import { buildKeyXlsx, buildReportXlsx, buildResultsXlsx } from "@/lib/exports/xlsx";
 
 export const runtime = "nodejs";
 
@@ -23,12 +25,21 @@ export async function GET(request: Request, context: RouteContext) {
   const options = parseExportRequest(new URL(request.url).searchParams);
   if (!options) return Response.json({ error: "Combinación de tipo, formato o separador no admitida." }, { status: 400 });
 
-  const exam = await findOwnedExam(session.user.id, id.data);
+  const access = await resolveExamAccess(session.user.id, id.data);
+  if (!access) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
+  const exam = await findOwnedExam(access.ownerId, id.data);
   if (!exam) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
-  const [key, students] = await Promise.all([
-    listOwnedAnswerKey(session.user.id, exam.id),
-    listOwnedExamRoster(session.user.id, exam.id),
+  const [key, roster, scoring] = await Promise.all([
+    listOwnedAnswerKey(access.ownerId, exam.id),
+    listOwnedExamRoster(access.ownerId, exam.id),
+    getOwnedScoringRule(access.ownerId, exam.id),
   ]);
+  const students = options.type === "report" && options.studentId
+    ? roster.filter((student) => student.id === options.studentId)
+    : roster;
+  if (options.type === "report" && options.studentId && students.length === 0) {
+    return Response.json({ error: "Alumno no encontrado." }, { status: 404 });
+  }
   const bundle: ExportBundle = {
     exam: {
       id: exam.id,
@@ -39,6 +50,7 @@ export async function GET(request: Request, context: RouteContext) {
       status: exam.status,
     },
     key: key.map((item) => ({ questionNo: item.questionNo, correctOption: item.correctOption })),
+    rule: scoring?.rule,
     students: students.map((student) => ({
       id: student.id,
       name: student.name,
@@ -61,9 +73,16 @@ export async function GET(request: Request, context: RouteContext) {
   else if (options.type === "results" && options.format === "csv") output = buildResultsCsv(bundle, options.delimiter);
   else if (options.type === "results" && options.format === "xlsx") output = await buildResultsXlsx(bundle);
   else if (options.type === "results" && options.format === "pdf") output = await buildResultsPdf(bundle);
+  else if (options.type === "report" && options.format === "csv") output = buildReportCsv(bundle, options.delimiter);
+  else if (options.type === "report" && options.format === "xlsx") output = await buildReportXlsx(bundle);
+  else if (options.type === "report" && options.format === "pdf") output = await buildReportPdf(bundle);
   else return Response.json({ error: "Combinación de exportación no admitida." }, { status: 400 });
 
-  const filename = `examen-${safeFilename(exam.title)}-${exam.id.slice(0, 8)}-${options.type}.${options.format}`;
+  const reportStudent = options.type === "report" && options.studentId
+    ? students[0]
+    : undefined;
+  const suffix = reportStudent ? `-${safeFilename(reportStudent.name)}` : "";
+  const filename = `examen-${safeFilename(exam.title)}-${exam.id.slice(0, 8)}-${options.type}${suffix}.${options.format}`;
   let body: BodyInit;
   if (typeof output === "string") body = output;
   else {

@@ -1,4 +1,4 @@
-import { isKeyValidated, keyExportRows, resultExportRows, type ExportBundle } from "./model";
+import { isKeyValidated, keyExportRows, reportStudentRows, resultExportRows, type ExportBundle } from "./model";
 
 export type CsvDelimiter = "," | ";";
 
@@ -33,4 +33,34 @@ export function buildResultsCsv(bundle: ExportBundle, delimiter: CsvDelimiter) {
     escapeCell(row.state, delimiter),
   ].join(delimiter));
   return `\uFEFF${[headers.map((header) => escapeCell(header, delimiter)).join(delimiter), ...rows].join("\r\n")}`;
+}
+
+export function buildReportCsv(bundle: ExportBundle, delimiter: CsvDelimiter) {
+  const headers = ["Nombre", "DNI", "Pregunta", "Respuesta alumno", "Respuesta correcta", "Resultado", "Puntos", "Aciertos", "Fallos", "Blancos", "Bruto", "Nota", "Estado"];
+  const lines: string[] = [headers.map((header) => escapeCell(header, delimiter)).join(delimiter)];
+  for (const row of reportStudentRows(bundle)) {
+    const name = escapeCell(row.student.name, delimiter, true);
+    const dni = escapeCell(row.student.dni, delimiter, true);
+    const summary = [
+      escapeCell(row.breakdown?.correct ?? null, delimiter),
+      escapeCell(row.breakdown?.wrong ?? null, delimiter),
+      escapeCell(row.breakdown?.blank ?? null, delimiter),
+      escapeCell(row.breakdown?.rawScore ?? null, delimiter),
+      escapeCell(row.breakdown?.score ?? null, delimiter),
+    ];
+    for (const question of row.questions) {
+      lines.push([
+        name,
+        dni,
+        escapeCell(question.questionNo, delimiter),
+        escapeCell(question.given, delimiter, true),
+        escapeCell(question.correct, delimiter),
+        escapeCell(question.outcome, delimiter),
+        escapeCell(question.points, delimiter),
+        ...summary,
+        escapeCell(row.state, delimiter),
+      ].join(delimiter));
+    }
+  }
+  return `\uFEFF${lines.join("\r\n")}`;
 }

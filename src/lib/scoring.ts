@@ -18,6 +18,23 @@ export type ScoreSummary = {
   score: string;
 };
 
+export type ScoreBreakdown = {
+  correct: number;
+  wrong: number;
+  blank: number;
+  pointsCorrect: string;
+  pointsWrong: string;
+  pointsBlank: string;
+  maxScore: string;
+  correctSubtotal: string;
+  wrongSubtotal: string;
+  blankSubtotal: string;
+  rawScore: string;
+  boundedRaw: string;
+  maxRaw: string;
+  score: string;
+};
+
 export const DEFAULT_SCORING_RULE: ScoringRule = {
   pointsCorrect: "1.0000",
   pointsWrong: "0.0000",
@@ -93,6 +110,56 @@ function roundHalfUp(numerator: bigint, denominator: bigint) {
   return quotient + (remainder * BigInt(2) >= denominator ? BigInt(1) : BigInt(0));
 }
 
+export function scoreBreakdown(input: {
+  correct: number;
+  wrong: number;
+  blank: number;
+  numQuestions: number;
+  rule: unknown;
+}): { success: true; breakdown: ScoreBreakdown } | { success: false; message: string } {
+  if (!Number.isInteger(input.numQuestions) || input.numQuestions < 1 || input.numQuestions > 100) {
+    return { success: false, message: "La configuración del examen no es válida." };
+  }
+  if (![input.correct, input.wrong, input.blank].every((value) => Number.isInteger(value) && value >= 0)) {
+    return { success: false, message: "Los conteos de la corrección no son válidos." };
+  }
+  const normalizedRule = validateScoringRule(input.rule);
+  if (!normalizedRule.success) return normalizedRule;
+
+  const rule = normalizedRule.rule;
+  const correctPoints = toScaled(rule.pointsCorrect)!;
+  const wrongPoints = toScaled(rule.pointsWrong)!;
+  const blankPoints = toScaled(rule.pointsBlank)!;
+  const maxScore = toScaled(rule.maxScore)!;
+  const correctSubtotal = BigInt(input.correct) * correctPoints;
+  const wrongSubtotal = BigInt(input.wrong) * wrongPoints;
+  const blankSubtotal = BigInt(input.blank) * blankPoints;
+  const raw = correctSubtotal + wrongSubtotal + blankSubtotal;
+  const maxRaw = BigInt(input.numQuestions) * correctPoints;
+  const bounded = raw < BigInt(0) ? BigInt(0) : raw > maxRaw ? maxRaw : raw;
+  const cents = roundHalfUp(bounded * maxScore * BigInt(100), maxRaw * SCALE);
+
+  return {
+    success: true,
+    breakdown: {
+      correct: input.correct,
+      wrong: input.wrong,
+      blank: input.blank,
+      pointsCorrect: rule.pointsCorrect,
+      pointsWrong: rule.pointsWrong,
+      pointsBlank: rule.pointsBlank,
+      maxScore: rule.maxScore,
+      correctSubtotal: fixed(correctSubtotal, 4),
+      wrongSubtotal: fixed(wrongSubtotal, 4),
+      blankSubtotal: fixed(blankSubtotal, 4),
+      rawScore: fixed(raw, 4),
+      boundedRaw: fixed(bounded, 4),
+      maxRaw: fixed(maxRaw, 4),
+      score: fixed(cents, 2),
+    },
+  };
+}
+
 export function calculateScore(input: {
   answers: unknown;
   answerKey: Array<{ questionNo: number; correctOption: string }>;
@@ -131,24 +198,22 @@ export function calculateScore(input: {
     else wrong += 1;
   }
 
-  const rule = normalizedRule.rule;
-  const correctPoints = toScaled(rule.pointsCorrect)!;
-  const wrongPoints = toScaled(rule.pointsWrong)!;
-  const blankPoints = toScaled(rule.pointsBlank)!;
-  const maxScore = toScaled(rule.maxScore)!;
-  const raw = BigInt(correct) * correctPoints + BigInt(wrong) * wrongPoints + BigInt(blank) * blankPoints;
-  const maxRaw = BigInt(input.numQuestions) * correctPoints;
-  const bounded = raw < BigInt(0) ? BigInt(0) : raw > maxRaw ? maxRaw : raw;
-  const cents = roundHalfUp(bounded * maxScore * BigInt(100), maxRaw * SCALE);
-
+  const breakdown = scoreBreakdown({
+    correct,
+    wrong,
+    blank,
+    numQuestions: input.numQuestions,
+    rule: normalizedRule.rule,
+  });
+  if (!breakdown.success) return breakdown;
   return {
     success: true,
     summary: {
       correct,
       wrong,
       blank,
-      rawScore: fixed(raw, 4),
-      score: fixed(cents, 2),
+      rawScore: breakdown.breakdown.rawScore,
+      score: breakdown.breakdown.score,
     },
   };
 }

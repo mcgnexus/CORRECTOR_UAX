@@ -77,9 +77,10 @@ export default function ExamDetalleClient({
   const rosterRefreshRef = useRef(0);
   const [csvDelimiter, setCsvDelimiter] = useState<"," | ";">(";");
 
-  function exportHref(type: "key" | "results", format: "csv" | "xlsx" | "pdf" | "json") {
+  function exportHref(type: "key" | "results" | "report", format: "csv" | "xlsx" | "pdf" | "json", studentId?: string) {
     const params = new URLSearchParams({ type, format });
     if (format === "csv") params.set("delimiter", csvDelimiter);
+    if (studentId) params.set("studentId", studentId);
     return `/api/exams/${examen.id}/export?${params.toString()}`;
   }
 
@@ -224,6 +225,15 @@ export default function ExamDetalleClient({
               <a href={exportHref("results", "csv")} className="export-link">CSV</a>
               <a href={exportHref("results", "xlsx")} className="export-link">Excel (.xlsx)</a>
               <a href={exportHref("results", "pdf")} className="export-link">PDF por alumno</a>
+            </div>
+          </div>
+          <div>
+            <h3>Informe de corrección</h3>
+            <p className="vacio">Incluye la respuesta de cada alumno, la correcta en los fallos y el cálculo paso a paso de la nota.</p>
+            <div className="export-actions">
+              <a href={exportHref("report", "csv")} className="export-link">CSV</a>
+              <a href={exportHref("report", "xlsx")} className="export-link">Excel (.xlsx)</a>
+              <a href={exportHref("report", "pdf")} className="export-link">PDF por alumno</a>
             </div>
           </div>
         </div>
