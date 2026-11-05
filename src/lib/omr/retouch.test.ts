@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { autoTone, composeCrop, isFullCrop, normalizeSelection, FULL_CROP } from "./retouch";
+import { applyTonePixels, autoTone, composeCrop, isFullCrop, normalizeSelection, FULL_CROP } from "./retouch";
 
 function image(values: number[], repeats = 1) {
   const data = new Uint8Array(values.length * repeats);
@@ -9,6 +9,22 @@ function image(values: number[], repeats = 1) {
   }
   return data;
 }
+
+test("vista previa y análisis comparten tono exacto sin acumular y conservan alfa", () => {
+  const source = new Uint8ClampedArray([0, 64, 128, 255, 192, 240, 255, 37]);
+  const preview = source.slice();
+  const analysis = source.slice();
+  applyTonePixels(preview, { brightness: 20, contrast: 1.5 });
+  applyTonePixels(analysis, { brightness: 20, contrast: 1.5 });
+  assert.deepEqual(preview, analysis);
+  assert.deepEqual([...preview], [0, 52, 148, 255, 244, 255, 255, 37]);
+  for (const brightness of [60, -60, 0]) {
+    const restored = source.slice();
+    applyTonePixels(restored, { brightness, contrast: 1 });
+    if (brightness === 0) assert.deepEqual(restored, source);
+  }
+  assert.deepEqual([...source], [0, 64, 128, 255, 192, 240, 255, 37]);
+});
 
 test("normaliza una selección arrastrada en cualquier dirección", () => {
   const selection = normalizeSelection({ x: 0.7, y: 0.8 }, { x: 0.2, y: 0.1 });

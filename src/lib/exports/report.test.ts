@@ -114,3 +114,18 @@ test("con la clave pendiente el informe no inventa respuestas correctas", () => 
   assert.equal(rows[0].questions[0].correct, null);
   assert.equal(rows[0].breakdown, null);
 });
+
+test("clave incompleta y calculo pendiente conservan respuestas sin correccion definitiva", () => {
+  for (const state of ["incomplete", "calculation"]) {
+    const data = bundle();
+    if (state === "incomplete") data.key.pop();
+    else data.students[1].score = null;
+    const row = reportStudentRows(data)[1];
+    assert.equal(row.state, state === "incomplete" ? "Pendiente de clave" : "Pendiente de cálculo");
+    assert.deepEqual(row.questions.map(({ questionNo, given, correct, points, outcome }) => ({ questionNo, given, correct, points, outcome })), [
+      { questionNo: 1, given: "B", correct: null, points: null, outcome: row.state },
+      { questionNo: 2, given: "C", correct: null, points: null, outcome: row.state },
+    ]);
+    assert.equal(row.breakdown, null);
+  }
+});

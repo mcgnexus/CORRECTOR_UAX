@@ -72,9 +72,9 @@ export function buildKeyPdf(bundle: ExportBundle) {
 
 export function buildResultsPdf(bundle: ExportBundle) {
   const rows = resultExportRows(bundle);
+  const reports = reportStudentRows(bundle);
   const summary = resultExportSummary(rows);
   const validated = isKeyValidated(bundle);
-  const key = new Map(bundle.key.map((item) => [item.questionNo, item.correctOption]));
   const average = summary.mean === null ? "Sin notas calculadas" : new Intl.NumberFormat("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(summary.mean);
 
   return collectPdf((document) => {
@@ -100,6 +100,7 @@ export function buildResultsPdf(bundle: ExportBundle) {
       document.font("Helvetica-Bold").fontSize(11).text(value, 410, y, { width: document.page.width - 466, align: "right" });
     });
     document.y = summaryStart + summaryRows.length * summaryHeight;
+    document.x = 44;
     document.moveDown(0.6);
     document.font("Helvetica").fontSize(9).fillColor("#555555").text(
       validated ? "Clave validada. Las notas corresponden a la regla guardada del examen." : "La clave está pendiente; no se muestran conteos ni notas derivados.",
@@ -128,27 +129,33 @@ export function buildResultsPdf(bundle: ExportBundle) {
         document.font("Helvetica-Bold").fontSize(10).fillColor("#222222").text(value, x, metricsStart + 12, { width: metricWidth - 4 });
       });
       document.y = metricsStart + 34;
+      document.x = 44;
       document.moveDown(0.5);
       if (row.state === "Pendiente") {
         document.font("Helvetica-Oblique").fontSize(10).text("Sin entrega registrada.");
         continue;
       }
       document.font("Helvetica-Bold").fontSize(11).text("Respuestas");
-      const midpoint = Math.ceil(row.answers.length / 2);
-      const lineHeight = 11;
-      const top = document.y + 8;
+      document.font("Helvetica").fontSize(9).text("En los fallos: Marcó B · Correcta: C indica respuesta marcada y correcta.", 44, document.y, { width: document.page.width - 88 });
+      let y = document.y + 8;
       const colWidth = (document.page.width - 104) / 2;
-      for (let index = 0; index < row.answers.length; index += 1) {
-        const column = index < midpoint ? 0 : 1;
-        const offset = column === 0 ? index : index - midpoint;
-        const answer = row.answers[index] || "—";
-        const x = 52 + column * (colWidth + 20);
-        const y = top + offset * lineHeight;
-        const correctOption = key.get(index + 1);
-        const color = row.state === "Corregido" && answer !== "En blanco" && answer !== "—"
-          ? answer === correctOption ? "#26733a" : "#9f2d2d"
-          : "#222222";
-        document.font("Helvetica").fontSize(9).fillColor(color).text(`P${index + 1}: ${answer}`, x, y, { width: colWidth });
+      const questions = reports.find((report) => report.student === row.student)!.questions;
+      for (let index = 0; index < questions.length; index += 2) {
+        const cells = questions.slice(index, index + 2).map((question) => ({
+          text: `P${question.questionNo}: ${question.outcome === "Fallo" ? `Marcó ${question.given} · Correcta: ${question.correct}` : question.given}`,
+          color: question.outcome === "Fallo" ? "#9f2d2d" : question.outcome === "Acierto" ? "#26733a" : "#222222",
+        }));
+        document.font("Helvetica").fontSize(9);
+        const height = Math.max(...cells.map((cell) => document.heightOfString(cell.text, { width: colWidth }))) + 2;
+        if (y + height > document.page.height - 70) {
+          document.addPage();
+          document.font("Helvetica-Bold").fontSize(11).fillColor("#17384f").text("Respuestas · continuación", 44, 44);
+          document.font("Helvetica").fontSize(9).text(row.student.name + " · DNI: " + row.student.dni, { width: document.page.width - 88 });
+          y = document.y + 8;
+        }
+        document.font("Helvetica").fontSize(9);
+        cells.forEach((cell, column) => document.fillColor(cell.color).text(cell.text, 52 + column * (colWidth + 20), y, { width: colWidth }));
+        y += height;
       }
     }
   });
@@ -191,12 +198,16 @@ function renderReportStudent(document: PdfDocument, bundle: ExportBundle, row: R
     });
     document.y = start + 34;
   }
+  document.x = 44;
   document.moveDown(0.3).font("Helvetica-Bold").fontSize(11).fillColor("#222222").text("Detalle por pregunta");
   const top = document.y + 6;
   let columns = reportTableHeader(document, top);
   let y = top + 22;
-  const lineHeight = 13;
   for (const question of row.questions) {
+    const outcome = question.outcome === "Fallo" ? `Fallo · Marcó ${question.given} · Correcta: ${question.correct}` : question.outcome;
+    const values = [String(question.questionNo), question.given, question.correct ?? "—", outcome, question.points ?? "—"];
+    document.font("Helvetica").fontSize(9);
+    const lineHeight = Math.max(...columns.map((column, index) => document.heightOfString(values[index], { width: column.width - 4 }))) + 4;
     if (y + lineHeight > document.page.height - 120) {
       document.addPage();
       document.font("Helvetica-Bold").fontSize(12).fillColor("#17384f").text("Informe de corrección · continuación");
@@ -205,22 +216,27 @@ function renderReportStudent(document: PdfDocument, bundle: ExportBundle, row: R
       columns = reportTableHeader(document, continuationTop);
       y = continuationTop + 22;
     }
-    const values = [String(question.questionNo), question.given, question.correct ?? "—", question.outcome, question.points ?? "—"];
     const color = question.outcome === "Acierto" ? "#26733a" : question.outcome === "Fallo" ? "#9f2d2d" : "#222222";
     document.font("Helvetica").fontSize(9).fillColor(color);
-    columns.forEach((column, index) => document.text(values[index], column.x + 2, y, { width: column.width - 4, lineBreak: false }));
+    columns.forEach((column, index) => document.text(values[index], column.x + 2, y, { width: column.width - 4 }));
     y += lineHeight;
   }
   document.y = y;
+  document.x = 44;
   document.moveDown(0.6);
   if (document.y > document.page.height - 150) document.addPage();
   document.font("Helvetica-Bold").fontSize(11).fillColor("#222222").text("Cálculo de la nota");
   document.moveDown(0.3);
   for (const [label, value] of reportCalculationRows(row)) {
+    document.font("Helvetica").fontSize(9);
+    const labelHeight = document.heightOfString(label, { width: 340 });
+    document.font("Helvetica-Bold");
+    const height = Math.max(labelHeight, document.heightOfString(value, { width: document.page.width - 456 })) + 4;
+    if (document.y + height > document.page.height - 70) document.addPage();
     const start = document.y;
     document.font("Helvetica").fontSize(9).fillColor("#333333").text(label, 56, start, { width: 340 });
     document.font("Helvetica-Bold").fontSize(9).fillColor("#222222").text(value, 400, start, { width: document.page.width - 456, align: "right" });
-    document.y = start + 13;
+    document.y = start + height;
   }
 }
 

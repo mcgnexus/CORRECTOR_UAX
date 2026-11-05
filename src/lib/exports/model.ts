@@ -110,7 +110,7 @@ export function safeFilename(value: string) {
   return slug || "examen";
 }
 
-export type ReportOutcome = "Acierto" | "Fallo" | "Blanco" | "Sin entrega" | "Pendiente de clave";
+export type ReportOutcome = "Acierto" | "Fallo" | "Blanco" | "Sin entrega" | "Pendiente de clave" | "Pendiente de cálculo";
 
 export type ReportQuestionRow = {
   questionNo: number;
@@ -147,6 +147,9 @@ export function reportStudentRows(bundle: ExportBundle): ReportStudentRow[] {
       const given = option === undefined ? "—" : option === null ? "En blanco" : ANSWER_LABELS[option] ?? "—";
       if (!validated) {
         return { questionNo, given, correct, outcome: "Pendiente de clave" as const, points: null };
+      }
+      if (row.state === "Pendiente de cálculo") {
+        return { questionNo, given, correct: null, outcome: "Pendiente de cálculo" as const, points: null };
       }
       if (option === undefined) {
         return { questionNo, given, correct, outcome: "Sin entrega" as const, points: null };

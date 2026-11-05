@@ -211,8 +211,9 @@ test("synthetic OMR image stays local and only reviewed answers enter IndexedDB 
   await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
   await assertNoAxeViolations(page);
   const canvasBefore = await page.locator("canvas.omr-preview").evaluate((canvas) => (canvas as HTMLCanvasElement).width);
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Retoque automático" }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Aplicar ajustes y releer" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
   await page.getByRole("button", { name: "Recortar" }).click();
   await page.locator("canvas.omr-preview").scrollIntoViewIfNeeded();
@@ -425,6 +426,145 @@ test("el administrador accede a exámenes de otro profesor", async ({ page }) =>
   const report = await page.request.get(`/api/exams/${examId}/export?type=report&format=csv`);
   expect(report.status()).toBe(200);
   expect(await report.text()).toContain("Conflict synthetic student");
+});
+
+test("@mobile login, dashboard y detalle no desbordan entre 320 y 430px", async ({ page }) => {
+  const noOverflow = async () => {
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
+  };
+  for (const width of [320, 375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/login");
+    await noOverflow();
+    await page.goto("/registro");
+    await noOverflow();
+  }
+  await signIn(page);
+  for (const width of [320, 375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/examenes");
+    await noOverflow();
+    await page.goto(`/examenes/${examId}`);
+    await expect(page.getByRole("heading", { name: "Introducir examen del alumno" })).toBeVisible();
+    await noOverflow();
+  }
+  await assertNoAxeViolations(page);
+  await page.setViewportSize({ width: 844, height: 390 });
+  await noOverflow();
+});
+
+test("@mobile retoque local conserva revisión, recorte táctil y orientación", async ({ page }) => {
+  await signIn(page);
+  await page.goto(`/examenes/${examId}`);
+  await page.evaluate(() => {
+    const OriginalWorker = window.Worker;
+    const state = window as typeof window & { omrWorkerMessages: number };
+    state.omrWorkerMessages = 0;
+    window.Worker = class extends OriginalWorker {
+      override postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
+        state.omrWorkerMessages += 1;
+        if (Array.isArray(options)) super.postMessage(message, options);
+        else super.postMessage(message, options);
+      }
+    };
+  });
+  const image = await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 900;
+    canvas.height = 1200;
+    const context = canvas.getContext("2d")!;
+    context.fillStyle = "#d0d0d0";
+    context.fillRect(0, 0, 900, 1200);
+    context.fillStyle = "#101010";
+    for (const [x, y] of [[60, 60], [840, 60], [60, 1140], [840, 1140]]) context.fillRect(x - 6, y - 6, 13, 13);
+    return canvas.toDataURL("image/png");
+  });
+  await page.locator("#omr-image").setInputFiles({ name: "mobile-synthetic.png", mimeType: "image/png", buffer: Buffer.from(image.split(",")[1], "base64") });
+  await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
+  await page.getByLabel("Respuesta final pregunta 1").selectOption("2");
+  await page.getByRole("button", { name: "Confirmar todas las respuestas" }).click();
+  await page.locator("#omr-student").selectOption(pendingStudentId);
+  const canvas = page.locator("canvas.omr-preview");
+  const pixels = () => canvas.evaluate((element) => (element as HTMLCanvasElement).toDataURL());
+  const original = await pixels();
+  const workers = await page.evaluate(() => (window as typeof window & { omrWorkerMessages: number }).omrWorkerMessages);
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (!["GET", "HEAD"].includes(request.method())) writes.push(request.url());
+  });
+  const reviewIntact = async () => {
+    await expect(page.getByLabel("Respuesta final pregunta 1")).toHaveValue("2");
+    await expect(page.locator("#omr-student")).toHaveValue(pendingStudentId);
+    await expect(page.getByText("Confirmada", { exact: true })).toHaveCount(2);
+  };
+  for (const [selector, value, initial] of [["#omr-brightness", "20", "0"], ["#omr-contrast", "0.8", "1"]]) {
+    await page.locator(selector).fill(value);
+    await expect.poll(pixels).not.toBe(original);
+    await reviewIntact();
+    await page.locator(selector).fill(initial);
+    await expect.poll(pixels).toBe(original);
+  }
+  await page.locator("#omr-brightness").focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator("#omr-brightness")).toBeFocused();
+  await expect.poll(pixels).not.toBe(original);
+  const pending = await pixels();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "Aplicar ajustes y releer" }).click();
+  await reviewIntact();
+  expect(await pixels()).toBe(pending);
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.locator("section").filter({ has: page.getByRole("heading", { name: "Introducir examen del alumno" }) }).getByRole("button", { name: "Girar derecha" }).click();
+  await reviewIntact();
+  expect(await pixels()).toBe(pending);
+  await page.getByRole("button", { name: "Retoque automático" }).click();
+  await reviewIntact();
+  expect(await page.evaluate(() => (window as typeof window & { omrWorkerMessages: number }).omrWorkerMessages)).toBe(workers);
+  expect(writes).toEqual([]);
+  await page.getByRole("button", { name: "Recortar", exact: true }).click();
+  await canvas.scrollIntoViewIfNeeded();
+  const start = (await canvas.boundingBox())!;
+  // Keep a native pointer active so synthetic touch pointers can capture it in both engines.
+  await page.mouse.move(start.x + 10, start.y + 10);
+  await page.mouse.down();
+  await canvas.dispatchEvent("pointerdown", { pointerId: 1, pointerType: "touch", isPrimary: true, clientX: (await canvas.boundingBox())!.x + 10, clientY: (await canvas.boundingBox())!.y + 10 });
+  const box = (await canvas.boundingBox())!;
+  await canvas.dispatchEvent("pointermove", { pointerId: 1, pointerType: "touch", isPrimary: true, clientX: box.x + box.width * 0.9, clientY: box.y + box.height * 0.9 });
+  await canvas.dispatchEvent("pointerup", { pointerId: 1, pointerType: "touch", isPrimary: true });
+  await page.mouse.up();
+  await expect(page.locator(".crop-selection")).toBeVisible();
+  expect(await page.locator(".omr-canvas-wrap").evaluate((element) => getComputedStyle(element).overflow)).toBe("hidden");
+  await page.setViewportSize({ width: 844, height: 390 });
+  const geometry = await canvas.evaluate((element) => {
+    const canvas = element as HTMLCanvasElement;
+    const rect = canvas.getBoundingClientRect();
+    const wrap = canvas.parentElement!.getBoundingClientRect();
+    return { intrinsic: canvas.width / canvas.height, displayed: rect.width / rect.height, dx: rect.x - wrap.x, dy: rect.y - wrap.y, dw: rect.width - wrap.width, dh: rect.height - wrap.height };
+  });
+  expect(geometry.displayed).toBeCloseTo(geometry.intrinsic, 2);
+  for (const delta of [geometry.dx, geometry.dy, geometry.dw, geometry.dh]) expect(Math.abs(delta)).toBeLessThan(1);
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "Aplicar recorte" }).click();
+  await reviewIntact();
+  await page.getByRole("button", { name: "Recortar", exact: true }).click();
+  await page.getByRole("button", { name: "Cancelar recorte" }).click();
+  await reviewIntact();
+  await assertNoAxeViolations(page);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Aplicar ajustes y releer" }).click();
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { omrWorkerMessages: number }).omrWorkerMessages)).toBeGreaterThan(workers);
+  await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
+  await page.locator("#omr-brightness").fill("12");
+  const toneBeforeManual = await page.locator("#omr-brightness").inputValue();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Marcar esquinas", exact: true }).click();
+  await canvas.scrollIntoViewIfNeeded();
+  const manualBox = (await canvas.boundingBox())!;
+  for (const [x, y] of [[60, 60], [840, 60], [60, 1140], [840, 1140]]) {
+    await canvas.click({ position: { x: manualBox.width * x / 900, y: manualBox.height * y / 1200 } });
+  }
+  await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
+  await expect(page.locator("#omr-brightness")).toHaveValue(toneBeforeManual);
 });
 
 test("exam page axe audit and account deletion purge this owner's local partition", async ({ page }) => {

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OmrAnswer, OmrProfile, OmrResult } from "@/lib/omr/read";
 import { detectRegistrationMarkers, markersFromPoints, type MatrixMarker, type Point } from "@/lib/matrix/detect";
-import { autoTone, composeCrop, FULL_CROP, isFullCrop, normalizeSelection, type CropRect, type Tone } from "@/lib/omr/retouch";
+import { applyTonePixels, autoTone, composeCrop, FULL_CROP, isFullCrop, normalizeSelection, type CropRect, type Tone } from "@/lib/omr/retouch";
 import { deleteQueuedResult, listQueuedResults, purgeQueuedResults, saveQueuedResult, type QueuedResult } from "@/lib/offline-queue/indexed-db";
 import { applyQueueDecision, classifyQueueResponse } from "@/lib/offline-queue/queue-state";
 
@@ -52,6 +52,10 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const bitmapRef = useRef<ImageBitmap | null>(null);
+  const baseRef = useRef<{ key: string; canvas: HTMLCanvasElement } | null>(null);
+  const previewFrameRef = useRef<number | null>(null);
+  const draftToneRef = useRef<Tone>({ brightness: 0, contrast: 1 });
+  const [analyzedTone, setAnalyzedTone] = useState<Tone | null>(null);
   const operationRef = useRef(0);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -88,6 +92,10 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   const lastAutoRetryRef = useRef(new Map<string, number>());
 
   function reset() {
+    if (previewFrameRef.current !== null) cancelAnimationFrame(previewFrameRef.current);
+    previewFrameRef.current = null;
+    baseRef.current = null;
+    setAnalyzedTone(null);
     operationRef.current += 1;
     pendingSaveRef.current = null;
     queuedReplacementRef.current = null;
@@ -120,6 +128,8 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   }
 
   useEffect(() => () => {
+    if (previewFrameRef.current !== null) cancelAnimationFrame(previewFrameRef.current);
+    baseRef.current = null;
     workerRef.current?.terminate();
     bitmapRef.current?.close();
   }, []);
@@ -229,12 +239,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   function applyToneData(context: CanvasRenderingContext2D, width: number, height: number, settings: { brightness: number; contrast: number }) {
     if (settings.brightness === 0 && settings.contrast === 1) return;
     const imageData = context.getImageData(0, 0, width, height);
-    const data = imageData.data;
-    for (let offset = 0; offset < data.length; offset += 4) {
-      data[offset] = Math.max(0, Math.min(255, (data[offset] - 128) * settings.contrast + 128 + settings.brightness));
-      data[offset + 1] = Math.max(0, Math.min(255, (data[offset + 1] - 128) * settings.contrast + 128 + settings.brightness));
-      data[offset + 2] = Math.max(0, Math.min(255, (data[offset + 2] - 128) * settings.contrast + 128 + settings.brightness));
-    }
+    applyTonePixels(imageData.data, settings);
     context.putImageData(imageData, 0, 0);
   }
 
@@ -242,6 +247,17 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     const bitmap = bitmapRef.current;
     const canvas = canvasRef.current;
     if (!bitmap || !canvas) return null;
+    const key = JSON.stringify([angle, cropRect]);
+    if (baseRef.current?.key === key) {
+      const base = baseRef.current.canvas;
+      canvas.width = base.width;
+      canvas.height = base.height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return null;
+      context.drawImage(base, 0, 0);
+      applyToneData(context, canvas.width, canvas.height, settings);
+      return { canvas, context, width: canvas.width, height: canvas.height };
+    }
     const swapped = angle === 90 || angle === 270;
     const rawWidth = swapped ? bitmap.height : bitmap.width;
     const rawHeight = swapped ? bitmap.width : bitmap.height;
@@ -252,7 +268,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     stage.width = width;
     stage.height = height;
     const stageContext = stage.getContext("2d");
-    if (!stageContext) { setError("No se pudo preparar la imagen."); setBusy(false); return null; }
+    if (!stageContext) return null;
     stageContext.save();
     stageContext.translate(width / 2, height / 2);
     stageContext.rotate((angle * Math.PI) / 180);
@@ -268,20 +284,40 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     canvas.width = sw;
     canvas.height = sh;
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) { setError("No se pudo preparar la imagen."); setBusy(false); return null; }
+    if (!context) return null;
     context.drawImage(stage, sx, sy, sw, sh, 0, 0, sw, sh);
+    const base = document.createElement("canvas");
+    base.width = sw;
+    base.height = sh;
+    const baseContext = base.getContext("2d");
+    if (!baseContext) return null;
+    baseContext.drawImage(canvas, 0, 0);
+    baseRef.current = { key, canvas: base };
     applyToneData(context, sw, sh, settings);
-    paintParamsRef.current = { angle, crop: cropRect, brightness: settings.brightness, contrast: settings.contrast };
-    setRotation(angle);
-    setCrop(cropRect);
-    setTone(settings);
     return { canvas, context, width: sw, height: sh };
   }
 
-  function renderAndAnalyze(angle: number, settings: Tone, override?: MatrixMarker[], cropOverride?: CropRect) {
-    if (reviewHasUnsavedChanges && !override && !window.confirm("La revisión actual no está guardada. ¿Descartarla y volver a leer la hoja?")) return;
+  function previewTone(settings: Tone) {
+    setTone(settings);
+    draftToneRef.current = settings;
+    if (previewFrameRef.current !== null) return;
+    previewFrameRef.current = requestAnimationFrame(() => {
+      previewFrameRef.current = null;
+      paint(rotation, crop, draftToneRef.current);
+      if (detectedMarkers && !manualMode) drawMarkers(detectedMarkers);
+    });
+  }
+
+  function renderAndAnalyze(angle: number, settings: Tone, override?: MatrixMarker[], cropOverride?: CropRect, discardConfirmed = false) {
+    if (review && !override && !discardConfirmed && !window.confirm("La lectura sustituirá la revisión actual. ¿Descartarla y volver a leer la hoja?")) return;
+    if (previewFrameRef.current !== null) cancelAnimationFrame(previewFrameRef.current);
+    previewFrameRef.current = null;
     const painted = paint(angle, cropOverride ?? crop, settings);
     if (!painted) { setBusy(false); return; }
+    paintParamsRef.current = { angle, crop: cropOverride ?? crop, ...settings };
+    setRotation(angle);
+    setCrop(cropOverride ?? crop);
+    setTone(settings);
     const { context, width, height } = painted;
 
     if (override) {
@@ -305,7 +341,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       setManualMode(true);
       setMarkerClicks([]);
       setBusy(false);
-      setError("No se detectaron las cuatro marcas. Toca sus esquinas en la imagen para indicarlas manualmente.");
+      setError("No se detectaron las cuatro marcas. Toca el centro de cada cuadrado negro para indicarlas manualmente.");
       return;
     }
     setDetectedMarkers(markers);
@@ -318,6 +354,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   function startRead(markers: MatrixMarker[]) {
     setProfileAtReadStart(profile);
     const params = paintParamsRef.current;
+    setAnalyzedTone({ brightness: params.brightness, contrast: params.contrast });
     const painted = paint(params.angle, params.crop, { brightness: params.brightness, contrast: params.contrast });
     const canvas = canvasRef.current;
     const context = painted?.context ?? canvas?.getContext("2d", { willReadFrequently: true });
@@ -369,7 +406,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   }
 
   async function processFile(file?: File) {
-    if (reviewHasUnsavedChanges && !window.confirm("La revisión actual no está guardada. ¿Descartarla y procesar otra hoja?")) return;
+    if (review && !window.confirm("La nueva imagen sustituirá la revisión actual. ¿Descartarla y procesar otra hoja?")) return;
     reset();
     const operation = operationRef.current;
     if (!file) return;
@@ -388,7 +425,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       }
       bitmapRef.current = bitmap;
       setImageLoaded(true);
-      renderAndAnalyze(bitmap.height <= bitmap.width ? 90 : 0, { brightness: 0, contrast: 1 }, undefined, FULL_CROP);
+      renderAndAnalyze(bitmap.height <= bitmap.width ? 90 : 0, { brightness: 0, contrast: 1 }, undefined, FULL_CROP, true);
     } catch (cause) {
       if (operation !== operationRef.current) return;
       setError(cause instanceof Error ? cause.message : "No se pudo abrir la imagen.");
@@ -447,19 +484,17 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
 
   function autoRetouch() {
     if (!imageLoaded) return;
-    setCropMode(false);
-    setCropDraft(null);
-    cropDraftRef.current = null;
-    const painted = paint(rotation, crop, { brightness: 0, contrast: 1 });
-    if (!painted) return;
-    const imageData = painted.context.getImageData(0, 0, painted.width, painted.height);
-    const gray = new Uint8Array(painted.width * painted.height);
+    const base = baseRef.current?.canvas;
+    const context = base?.getContext("2d");
+    if (!base || !context) return;
+    const imageData = context.getImageData(0, 0, base.width, base.height);
+    const gray = new Uint8Array(base.width * base.height);
     for (let index = 0; index < gray.length; index += 1) {
       const offset = index * 4;
       gray[index] = Math.round(imageData.data[offset] * 0.299 + imageData.data[offset + 1] * 0.587 + imageData.data[offset + 2] * 0.114);
     }
     const computed = autoTone(gray);
-    renderAndAnalyze(rotation, computed);
+    previewTone(computed);
   }
 
   function canvasPoint(event: React.PointerEvent<HTMLCanvasElement>) {
@@ -506,6 +541,11 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   function startManualMarkers() {
     const canvas = canvasRef.current;
     if (!canvas || !imageLoaded) return;
+    if (review && !window.confirm("La selección manual sustituirá la revisión actual. ¿Descartarla y marcar la hoja?")) return;
+    if (previewFrameRef.current !== null) cancelAnimationFrame(previewFrameRef.current);
+    previewFrameRef.current = null;
+    paint(rotation, crop, tone);
+    paintParamsRef.current = { angle: rotation, crop, ...tone };
     setManualMode(true);
     setMarkerClicks([]);
     setDetectedMarkers(null);
@@ -547,6 +587,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     setMarkerClicks([]);
     setDetectedMarkers(markers);
     setManualMode(false);
+    paintParamsRef.current = { angle: rotation, crop, ...tone };
     drawMarkers(markers);
     startRead(markers);
   }
@@ -880,8 +921,8 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
 
   return <>
   <section className="tarjeta">
-    <h2>Probar lectura OMR</h2>
-    <p className="vacio">La detección provisional se procesa en este dispositivo. Solo al guardar, se envían el alumno elegido y las respuestas revisadas; la foto nunca se sube ni se conserva.</p>
+    <h2>Introducir examen del alumno</h2>
+    <p className="vacio">Haz una fotografía o elige un archivo, revisa las respuestas y guarda la entrega del alumno. La detección provisional se procesa en este dispositivo. Solo al guardar, se envían el alumno elegido y las respuestas revisadas; la foto nunca se sube ni se conserva.</p>
     {disabledReason ? <p className="vacio">{disabledReason} {!profile && <Link href={`/examenes/${examId}#calibracion`}>Ir a calibración</Link>}</p> : <>
       <div className="fila-acciones">
         <label className="boton" htmlFor="omr-camera" aria-disabled={busy || saving}>Abrir cámara</label>
@@ -895,7 +936,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
           ref={canvasRef}
           className="omr-preview"
           hidden={!imageLoaded}
-          aria-label={cropMode ? "Zona de recorte: arrastra para seleccionar el área de la hoja." : "Hoja cargada. Toca las cuatro esquinas de las marcas cuando se solicite."}
+          aria-label={cropMode ? "Zona de recorte: arrastra para seleccionar el área de la hoja." : "Hoja cargada. Toca el centro de cada cuadrado negro cuando se solicite."}
           onClick={onCanvasClick}
           onPointerDown={onCropPointerDown}
           onPointerMove={onCropPointerMove}
@@ -909,7 +950,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
         <button type="button" className="secundario" onClick={() => rotateImage(-90)} disabled={busy || saving}>Girar izquierda</button>
         <button type="button" className="secundario" onClick={() => rotateImage(90)} disabled={busy || saving}>Girar derecha</button>
         <button type="button" className="secundario" onClick={startCrop} disabled={busy || saving || cropMode}>Recortar</button>
-        <button type="button" className="secundario" onClick={autoRetouch} disabled={busy || saving}>Retoque automático</button>
+        <button type="button" className="secundario" onClick={autoRetouch} disabled={busy || saving || cropMode || manualMode}>Retoque automático</button>
         <button type="button" className="secundario" onClick={startManualMarkers} disabled={busy || saving || cropMode}>Marcar esquinas</button>
         <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving || cropMode}>Releer marcas</button>
       </div>}
@@ -922,12 +963,13 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       {imageLoaded && <fieldset className="matriz-ajustes">
         <legend>Retoque de imagen</legend>
         <label htmlFor="omr-brightness">Brillo ({tone.brightness})</label>
-        <input id="omr-brightness" type="range" min={-60} max={60} step={2} value={tone.brightness} onChange={(event) => setTone((current) => ({ ...current, brightness: Number(event.target.value) }))} />
+        <input id="omr-brightness" type="range" disabled={busy || saving || manualMode} min={-60} max={60} step={2} value={tone.brightness} onChange={(event) => previewTone({ ...tone, brightness: Number(event.target.value) })} />
         <label htmlFor="omr-contrast">Contraste ({tone.contrast.toFixed(2)}×)</label>
-        <input id="omr-contrast" type="range" min={0.6} max={1.8} step={0.05} value={tone.contrast} onChange={(event) => setTone((current) => ({ ...current, contrast: Number(event.target.value) }))} />
-        <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving}>Aplicar retoque y releer</button>
+        <input id="omr-contrast" type="range" disabled={busy || saving || manualMode} min={0.6} max={1.8} step={0.05} value={tone.contrast} onChange={(event) => previewTone({ ...tone, contrast: Number(event.target.value) })} />
+        <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving || cropMode}>Aplicar ajustes y releer</button>
+        {analyzedTone && (tone.brightness !== analyzedTone.brightness || tone.contrast !== analyzedTone.contrast) ? <p className="aviso" role="status">Vista previa modificada; relee para actualizar la detección</p> : null}
       </fieldset>}
-      {manualMode && <p className="vacio" role="status">Marca las cuatro esquinas de las marcas de registro tocando la imagen, en cualquier orden.</p>}
+      {manualMode && <p className="vacio" role="status">Toca el centro de cada uno de los cuatro cuadrados negros, en cualquier orden.</p>}
       {detectedMarkers && !manualMode && <p className="vacio" role="status">Se han localizado las cuatro marcas de registro.</p>}
       {busy && <p role="status">Procesando localmente… {progress}%</p>}
       {error && <p className="error" role="alert">{error}</p>}
@@ -941,7 +983,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
           <option value="">Selecciona un alumno</option>
           {students.map((student) => <option key={student.id} value={student.id}>{student.name} · {student.dni}</option>)}
         </select>
-        <div className="omr-table-wrap"><table><thead><tr><th>Pregunta</th><th>{review.every((answer) => answer.flag === "guardada") ? "Respuesta guardada" : "Detección provisional"}</th><th>Confianza</th><th>Respuesta final</th><th>Revisión</th></tr></thead><tbody>
+        <div className="omr-table-wrap" role="region" aria-label="Revisión de respuestas, tabla desplazable" tabIndex={0}><table><thead><tr><th>Pregunta</th><th>{review.every((answer) => answer.flag === "guardada") ? "Respuesta guardada" : "Detección provisional"}</th><th>Confianza</th><th>Respuesta final</th><th>Revisión</th></tr></thead><tbody>
           {review.map((answer, index) => <tr key={answer.q} className={!answer.confirmed ? "omr-pending" : answer.flag === "guardada" || answer.flag === "ok" ? "" : `omr-${answer.flag}`}>
             <td>{answer.q}</td>
             <td>{answer.flag === "guardada" ? (answer.detected === null ? "En blanco" : LABELS[answer.detected] ?? answer.detected + 1) : answer.detected === null ? "—" : LABELS[answer.detected] ?? answer.detected + 1} {answer.flag !== "guardada" && answer.flag !== "ok" ? `· ${FLAGS[answer.flag]}` : ""}</td>
@@ -991,7 +1033,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       {importing && <span role="status">Validando e importando…</span>}
     </div>
     {feedback && <p className="ok" role="status">{feedback}</p>}
-    {students.length === 0 ? <p className="vacio">Todavía no hay alumnos en el roster.</p> : <div className="omr-table-wrap"><table><thead><tr><th>Alumno</th><th>DNI</th><th>Estado</th><th>Aciertos</th><th>Fallos</th><th>Blancos</th><th>Bruto</th><th>Nota</th><th>Acciones</th></tr></thead><tbody>
+    {students.length === 0 ? <p className="vacio">Todavía no hay alumnos en el roster.</p> : <div className="omr-table-wrap" role="region" aria-label="Alumnos y resultados, tabla desplazable" tabIndex={0}><table><thead><tr><th>Alumno</th><th>DNI</th><th>Estado</th><th>Aciertos</th><th>Fallos</th><th>Blancos</th><th>Bruto</th><th>Nota</th><th>Acciones</th></tr></thead><tbody>
       {students.map((student) => <tr key={student.id}><td>{student.name}</td><td>{student.dni}</td><td>{student.savedAt ? student.score === null ? "Puntuación pendiente de validar" : `Corregido · ${new Date(student.savedAt).toLocaleString("es-ES")}` : "Pendiente"}</td><td>{student.correct ?? "—"}</td><td>{student.wrong ?? "—"}</td><td>{student.blank ?? "—"}</td><td>{student.rawScore ?? "—"}</td><td>{student.score ?? "—"}</td><td><div className="fila-acciones">{student.savedAt && <><a className="export-link" href={`/api/exams/${examId}/export?type=report&format=pdf&studentId=${student.id}`}>Informe PDF</a><button type="button" className="secundario" onClick={() => editSaved(student)} disabled={!keyValidated}>Abrir / editar</button><button type="button" className="peligro" onClick={() => void deleteResult(student)}>Eliminar entrega</button></>}<button type="button" className="peligro" onClick={() => void deleteStudent(student)}>Eliminar alumno</button></div></td></tr>)}
     </tbody></table></div>}
     {studentError && !review && <p className="error" role="alert">{studentError}</p>}

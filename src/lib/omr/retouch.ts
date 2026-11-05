@@ -3,6 +3,14 @@ export type Tone = { brightness: number; contrast: number };
 
 export const FULL_CROP: CropRect = { x: 0, y: 0, w: 1, h: 1 };
 
+export function applyTonePixels(data: Uint8ClampedArray, tone: Tone) {
+  for (let offset = 0; offset < data.length; offset += 4) {
+    for (let channel = 0; channel < 3; channel += 1) {
+      data[offset + channel] = (data[offset + channel] - 128) * tone.contrast + 128 + tone.brightness;
+    }
+  }
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
