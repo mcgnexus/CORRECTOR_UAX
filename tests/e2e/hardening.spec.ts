@@ -210,6 +210,25 @@ test("synthetic OMR image stays local and only reviewed answers enter IndexedDB 
   await page.locator("#omr-image").setInputFiles({ name: "synthetic-answer-sheet.png", mimeType: "image/png", buffer: imageBytes });
   await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
   await assertNoAxeViolations(page);
+  const canvasBefore = await page.locator("canvas.omr-preview").evaluate((canvas) => (canvas as HTMLCanvasElement).width);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Retoque automático" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
+  await page.getByRole("button", { name: "Recortar" }).click();
+  await page.locator("canvas.omr-preview").scrollIntoViewIfNeeded();
+  const box = await page.locator("canvas.omr-preview").boundingBox();
+  if (!box) throw new Error("No se pudo medir el lienzo");
+  await page.mouse.move(box.x + box.width * 0.03, box.y + box.height * 0.03);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.97, box.y + box.height * 0.97, { steps: 6 });
+  await page.mouse.up();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Aplicar recorte" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
+  const canvasAfter = await page.locator("canvas.omr-preview").evaluate((canvas) => (canvas as HTMLCanvasElement).width);
+  expect(canvasAfter).toBeLessThan(canvasBefore);
+  await expect(page.getByText("Recorte aplicado", { exact: false })).toBeVisible();
+
   await page.getByRole("button", { name: "Confirmar todas las respuestas" }).click();
   await expect(page.getByText("Confirmada", { exact: true })).toHaveCount(2);
   await page.locator("#omr-student").selectOption(pendingStudentId);

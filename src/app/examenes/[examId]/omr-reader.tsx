@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OmrAnswer, OmrProfile, OmrResult } from "@/lib/omr/read";
 import { detectRegistrationMarkers, markersFromPoints, type MatrixMarker, type Point } from "@/lib/matrix/detect";
+import { autoTone, composeCrop, FULL_CROP, isFullCrop, normalizeSelection, type CropRect, type Tone } from "@/lib/omr/retouch";
 import { deleteQueuedResult, listQueuedResults, purgeQueuedResults, saveQueuedResult, type QueuedResult } from "@/lib/offline-queue/indexed-db";
 import { applyQueueDecision, classifyQueueResponse } from "@/lib/offline-queue/queue-state";
 
@@ -58,11 +59,16 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   const [result, setResult] = useState<OmrResult | null>(null);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [rotation, setRotation] = useState(0);
-  const [tone, setTone] = useState({ brightness: 0, contrast: 1 });
+  const [tone, setTone] = useState<Tone>({ brightness: 0, contrast: 1 });
+  const [crop, setCrop] = useState<CropRect>(FULL_CROP);
+  const [cropMode, setCropMode] = useState(false);
+  const [cropDraft, setCropDraft] = useState<CropRect | null>(null);
+  const cropDraftRef = useRef<CropRect | null>(null);
+  const dragStartRef = useRef<Point | null>(null);
   const [manualMode, setManualMode] = useState(false);
   const [markerClicks, setMarkerClicks] = useState<Point[]>([]);
   const [detectedMarkers, setDetectedMarkers] = useState<MatrixMarker[] | null>(null);
-  const paintParamsRef = useRef({ angle: 0, brightness: 0, contrast: 1 });
+  const paintParamsRef = useRef({ angle: 0, crop: FULL_CROP, brightness: 0, contrast: 1 });
   const [profileAtReadStart, setProfileAtReadStart] = useState(profile);
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [review, setReview] = useState<ReviewAnswer[] | null>(null);
@@ -93,6 +99,11 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     setImageLoaded(false);
     setRotation(0);
     setTone({ brightness: 0, contrast: 1 });
+    setCrop(FULL_CROP);
+    setCropMode(false);
+    setCropDraft(null);
+    cropDraftRef.current = null;
+    dragStartRef.current = null;
     setManualMode(false);
     setMarkerClicks([]);
     setDetectedMarkers(null);
@@ -227,7 +238,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     context.putImageData(imageData, 0, 0);
   }
 
-  function paint(angle: number, settings: { brightness: number; contrast: number }) {
+  function paint(angle: number, cropRect: CropRect, settings: Tone) {
     const bitmap = bitmapRef.current;
     const canvas = canvasRef.current;
     if (!bitmap || !canvas) return null;
@@ -237,26 +248,39 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     const factor = Math.min(1, MAX_SIDE / Math.max(rawWidth, rawHeight));
     const width = Math.round(rawWidth * factor);
     const height = Math.round(rawHeight * factor);
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) { setError("No se pudo preparar la imagen."); setBusy(false); return null; }
-    context.save();
-    context.translate(width / 2, height / 2);
-    context.rotate((angle * Math.PI) / 180);
+    const stage = document.createElement("canvas");
+    stage.width = width;
+    stage.height = height;
+    const stageContext = stage.getContext("2d");
+    if (!stageContext) { setError("No se pudo preparar la imagen."); setBusy(false); return null; }
+    stageContext.save();
+    stageContext.translate(width / 2, height / 2);
+    stageContext.rotate((angle * Math.PI) / 180);
     const drawWidth = Math.round(bitmap.width * factor);
     const drawHeight = Math.round(bitmap.height * factor);
-    context.drawImage(bitmap, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
-    context.restore();
-    applyToneData(context, width, height, settings);
-    paintParamsRef.current = { angle, brightness: settings.brightness, contrast: settings.contrast };
+    stageContext.drawImage(bitmap, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+    stageContext.restore();
+
+    const sx = Math.max(0, Math.min(width - 1, Math.round(cropRect.x * width)));
+    const sy = Math.max(0, Math.min(height - 1, Math.round(cropRect.y * height)));
+    const sw = Math.max(1, Math.min(width - sx, Math.round(cropRect.w * width)));
+    const sh = Math.max(1, Math.min(height - sy, Math.round(cropRect.h * height)));
+    canvas.width = sw;
+    canvas.height = sh;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) { setError("No se pudo preparar la imagen."); setBusy(false); return null; }
+    context.drawImage(stage, sx, sy, sw, sh, 0, 0, sw, sh);
+    applyToneData(context, sw, sh, settings);
+    paintParamsRef.current = { angle, crop: cropRect, brightness: settings.brightness, contrast: settings.contrast };
     setRotation(angle);
+    setCrop(cropRect);
     setTone(settings);
-    return { canvas, context, width, height };
+    return { canvas, context, width: sw, height: sh };
   }
 
-  function renderAndAnalyze(angle: number, settings: { brightness: number; contrast: number }, override?: MatrixMarker[]) {
-    const painted = paint(angle, settings);
+  function renderAndAnalyze(angle: number, settings: Tone, override?: MatrixMarker[], cropOverride?: CropRect) {
+    if (reviewHasUnsavedChanges && !override && !window.confirm("La revisión actual no está guardada. ¿Descartarla y volver a leer la hoja?")) return;
+    const painted = paint(angle, cropOverride ?? crop, settings);
     if (!painted) { setBusy(false); return; }
     const { context, width, height } = painted;
 
@@ -294,7 +318,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   function startRead(markers: MatrixMarker[]) {
     setProfileAtReadStart(profile);
     const params = paintParamsRef.current;
-    const painted = paint(params.angle, { brightness: params.brightness, contrast: params.contrast });
+    const painted = paint(params.angle, params.crop, { brightness: params.brightness, contrast: params.contrast });
     const canvas = canvasRef.current;
     const context = painted?.context ?? canvas?.getContext("2d", { willReadFrequently: true });
     if (!canvas || !context || !profile) return;
@@ -364,7 +388,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       }
       bitmapRef.current = bitmap;
       setImageLoaded(true);
-      renderAndAnalyze(bitmap.height <= bitmap.width ? 90 : 0, { brightness: 0, contrast: 1 });
+      renderAndAnalyze(bitmap.height <= bitmap.width ? 90 : 0, { brightness: 0, contrast: 1 }, undefined, FULL_CROP);
     } catch (cause) {
       if (operation !== operationRef.current) return;
       setError(cause instanceof Error ? cause.message : "No se pudo abrir la imagen.");
@@ -374,7 +398,109 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
 
   function rotateImage(delta: number) {
     if (!bitmapRef.current) return;
-    renderAndAnalyze((rotation + delta + 360) % 360, tone);
+    setCropDraft(null);
+    cropDraftRef.current = null;
+    setCropMode(false);
+    renderAndAnalyze((rotation + delta + 360) % 360, tone, undefined, FULL_CROP);
+  }
+
+  function startCrop() {
+    if (!imageLoaded) return;
+    setCropMode(true);
+    setCropDraft(null);
+    cropDraftRef.current = null;
+    setManualMode(false);
+    setMarkerClicks([]);
+    setError("");
+  }
+
+  function cancelCrop() {
+    setCropMode(false);
+    setCropDraft(null);
+    cropDraftRef.current = null;
+    setError("");
+  }
+
+  function applyCrop() {
+    if (!cropDraft) {
+      setError("Arrastra sobre la imagen para seleccionar la zona que quieres conservar.");
+      return;
+    }
+    const next = composeCrop(crop, cropDraft);
+    if (!next) {
+      setError("La selección es demasiado pequeña. Elige un área mayor.");
+      return;
+    }
+    setCropMode(false);
+    setCropDraft(null);
+    cropDraftRef.current = null;
+    renderAndAnalyze(rotation, tone, undefined, next);
+  }
+
+  function resetCrop() {
+    if (isFullCrop(crop)) return;
+    setCropMode(false);
+    setCropDraft(null);
+    cropDraftRef.current = null;
+    renderAndAnalyze(rotation, tone, undefined, FULL_CROP);
+  }
+
+  function autoRetouch() {
+    if (!imageLoaded) return;
+    setCropMode(false);
+    setCropDraft(null);
+    cropDraftRef.current = null;
+    const painted = paint(rotation, crop, { brightness: 0, contrast: 1 });
+    if (!painted) return;
+    const imageData = painted.context.getImageData(0, 0, painted.width, painted.height);
+    const gray = new Uint8Array(painted.width * painted.height);
+    for (let index = 0; index < gray.length; index += 1) {
+      const offset = index * 4;
+      gray[index] = Math.round(imageData.data[offset] * 0.299 + imageData.data[offset + 1] * 0.587 + imageData.data[offset + 2] * 0.114);
+    }
+    const computed = autoTone(gray);
+    renderAndAnalyze(rotation, computed);
+  }
+
+  function canvasPoint(event: React.PointerEvent<HTMLCanvasElement>) {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+    };
+  }
+
+  function onCropPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (!cropMode || busy) return;
+    const point = canvasPoint(event);
+    if (!point) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragStartRef.current = point;
+    const draft = normalizeSelection(point, point);
+    setCropDraft(draft);
+    cropDraftRef.current = draft;
+  }
+
+  function onCropPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (!cropMode || !dragStartRef.current) return;
+    const point = canvasPoint(event);
+    if (!point) return;
+    const draft = normalizeSelection(dragStartRef.current, point);
+    setCropDraft(draft);
+    cropDraftRef.current = draft;
+  }
+
+  function onCropPointerUp(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (!cropMode) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    dragStartRef.current = null;
+    const draft = cropDraftRef.current;
+    if (!draft || draft.w < 0.04 || draft.h < 0.04) {
+      setCropDraft(null);
+      cropDraftRef.current = null;
+    }
   }
 
   function startManualMarkers() {
@@ -391,7 +517,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   }
 
   function onCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
-    if (!manualMode) return;
+    if (!manualMode || cropMode) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -764,13 +890,35 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
         <input id="omr-image" type="file" accept="image/*" disabled={busy || saving} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void processFile(file); }} />
         {(imageLoaded || busy) && <button type="button" className="secundario" onClick={reset} disabled={busy || saving}>Reiniciar</button>}
       </div>
-      <canvas ref={canvasRef} className="omr-preview" hidden={!imageLoaded} aria-label="Hoja cargada. Toca las cuatro esquinas de las marcas cuando se solicite." onClick={onCanvasClick} style={imageLoaded ? (manualMode ? { cursor: "crosshair" } : undefined) : { display: "none" }} />
+      <div className="omr-canvas-wrap">
+        <canvas
+          ref={canvasRef}
+          className="omr-preview"
+          hidden={!imageLoaded}
+          aria-label={cropMode ? "Zona de recorte: arrastra para seleccionar el área de la hoja." : "Hoja cargada. Toca las cuatro esquinas de las marcas cuando se solicite."}
+          onClick={onCanvasClick}
+          onPointerDown={onCropPointerDown}
+          onPointerMove={onCropPointerMove}
+          onPointerUp={onCropPointerUp}
+          onPointerCancel={onCropPointerUp}
+          style={imageLoaded ? { cursor: cropMode ? "crosshair" : manualMode ? "crosshair" : undefined, touchAction: cropMode ? "none" : undefined } : { display: "none" }}
+        />
+        {cropMode && cropDraft ? <div className="crop-selection" style={{ left: cropDraft.x * 100 + "%", top: cropDraft.y * 100 + "%", width: cropDraft.w * 100 + "%", height: cropDraft.h * 100 + "%" }} /> : null}
+      </div>
       {imageLoaded && <div className="fila-acciones">
         <button type="button" className="secundario" onClick={() => rotateImage(-90)} disabled={busy || saving}>Girar izquierda</button>
         <button type="button" className="secundario" onClick={() => rotateImage(90)} disabled={busy || saving}>Girar derecha</button>
-        <button type="button" className="secundario" onClick={startManualMarkers} disabled={busy || saving}>Marcar esquinas</button>
-        <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving}>Releer marcas</button>
+        <button type="button" className="secundario" onClick={startCrop} disabled={busy || saving || cropMode}>Recortar</button>
+        <button type="button" className="secundario" onClick={autoRetouch} disabled={busy || saving}>Retoque automático</button>
+        <button type="button" className="secundario" onClick={startManualMarkers} disabled={busy || saving || cropMode}>Marcar esquinas</button>
+        <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving || cropMode}>Releer marcas</button>
       </div>}
+      {cropMode && <div className="fila-acciones">
+        <button type="button" onClick={applyCrop} disabled={!cropDraft || busy}>Aplicar recorte</button>
+        <button type="button" className="secundario" onClick={cancelCrop} disabled={busy}>Cancelar recorte</button>
+      </div>}
+      {cropMode ? <p className="vacio" role="status">Arrastra sobre la imagen para encuadrar la hoja. Después pulsa «Aplicar recorte».</p> : null}
+      {!isFullCrop(crop) && !cropMode ? <p className="vacio">Recorte aplicado. <button type="button" className="secundario" onClick={resetCrop} disabled={busy || saving}>Restablecer recorte</button></p> : null}
       {imageLoaded && <fieldset className="matriz-ajustes">
         <legend>Retoque de imagen</legend>
         <label htmlFor="omr-brightness">Brillo ({tone.brightness})</label>
