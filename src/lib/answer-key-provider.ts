@@ -1,9 +1,25 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import { parseProviderAnswerKey, type ProviderAnswer } from "@/lib/answer-key";
 
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions";
 const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_TOKENS = 8_192;
+
+function endpointForRequest() {
+  const testEndpoint = process.env.PLAYWRIGHT_TEST === "1" ? process.env.DEEPSEEK_TEST_ENDPOINT : undefined;
+  if (!testEndpoint) return DEEPSEEK_ENDPOINT;
+  if (process.env.NODE_ENV === "production") throw new Error("DEEPSEEK_TEST_ENDPOINT_INVALID");
+  try {
+    const url = new URL(testEndpoint);
+    if (url.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(url.hostname) || url.pathname !== "/chat/completions" || url.search || url.username || url.password) {
+      throw new Error("invalid test endpoint");
+    }
+    return url.toString();
+  } catch {
+    throw new Error("DEEPSEEK_TEST_ENDPOINT_INVALID");
+  }
+}
 
 export interface AnswerKeyProvider {
   generate(text: string, numQuestions: number, numOptions: number): Promise<ProviderAnswer[]>;
@@ -17,6 +33,10 @@ type ChatCompletion = {
 };
 
 class InvalidModelOutputError extends Error {}
+
+class ProviderRequestError extends Error {
+  constructor(readonly code: string, readonly status: number | null = null) { super(code); }
+}
 
 async function requestAnswerKey(
   text: string,
@@ -44,7 +64,7 @@ async function requestAnswerKey(
 
   let response: Response;
   try {
-    response = await fetcher(DEEPSEEK_ENDPOINT, {
+    response = await fetcher(endpointForRequest(), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -61,14 +81,15 @@ async function requestAnswerKey(
         stream: false,
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      redirect: process.env.PLAYWRIGHT_TEST === "1" ? "error" : "follow",
       cache: "no-store",
     });
   } catch {
-    throw new Error("DEEPSEEK_UNAVAILABLE");
+    throw new ProviderRequestError("DEEPSEEK_UNAVAILABLE");
   }
 
   if (!response.ok) {
-    throw new Error(response.status === 401 || response.status === 403 ? "DEEPSEEK_AUTH_FAILED" : "DEEPSEEK_REQUEST_FAILED");
+    throw new ProviderRequestError(response.status === 401 || response.status === 403 ? "DEEPSEEK_AUTH_FAILED" : "DEEPSEEK_REQUEST_FAILED", response.status);
   }
 
   let payload: ChatCompletion;
@@ -92,7 +113,10 @@ async function requestAnswerKey(
 export function createDeepSeekAnswerKeyProvider(fetcher: typeof fetch = fetch): AnswerKeyProvider {
   return {
     async generate(text, numQuestions, numOptions) {
+      const startedAt = Date.now();
+      let attempts = 0;
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        attempts = attempt + 1;
         try {
           return await requestAnswerKey(
             text,
@@ -103,6 +127,20 @@ export function createDeepSeekAnswerKeyProvider(fetcher: typeof fetch = fetch): 
           );
         } catch (error) {
           if (!(error instanceof InvalidModelOutputError) || attempt === 1) {
+            const code = error instanceof InvalidModelOutputError
+              ? "DEEPSEEK_INVALID_OUTPUT"
+              : error instanceof ProviderRequestError
+                ? error.code
+                : error instanceof Error && ["DEEPSEEK_API_KEY_MISSING", "DEEPSEEK_INVALID_OUTPUT"].includes(error.message)
+                  ? error.message
+                  : "DEEPSEEK_REQUEST_FAILED";
+            console.error(JSON.stringify({
+              eventId: randomUUID(),
+              code,
+              status: error instanceof ProviderRequestError ? error.status : null,
+              attempts,
+              durationMs: Date.now() - startedAt,
+            }));
             if (error instanceof InvalidModelOutputError) throw new Error("DEEPSEEK_INVALID_OUTPUT");
             throw error;
           }

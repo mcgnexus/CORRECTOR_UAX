@@ -9,15 +9,20 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node --conditions=react-server --import tsx --test \"src/**/*.test.ts\"",
+    "db:migrate:test": "node --import tsx scripts/test-db.ts migrate",
+    "test:db": "node --import tsx scripts/test-db.ts test",
+    "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.2",
     "drizzle-orm": "^0.45.4",
+    "exceljs": "^4.4.0",
     "next": "16.4.5",
     "next-auth": "5.0.0-beta.32",
     "pdfjs-dist": "^6.5.438",
+    "pdfkit": "^0.20.2",
     "postgres": "^3.4.7",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
@@ -26,14 +31,23 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.64.1",
     "@types/node": "^24.0.0",
+    "@types/pdfkit": "^0.17.7",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "drizzle-kit": "^0.31.11",
     "eslint": "^9.39.0",
     "eslint-config-next": "16.4.5",
+    "fake-indexeddb": "^6.2.7",
     "jpeg-js": "^0.4.4",
     "tsx": "^4.20.0",
     "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   }
 }

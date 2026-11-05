@@ -3,6 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { signOut } from "next-auth/react";
+import { purgeOwnerQueue, purgeQueuedResults } from "@/lib/offline-queue/indexed-db";
 
 type Exam = {
   id: string;
@@ -19,10 +21,22 @@ const ETIQUETAS_ESTADO: Record<Exam["status"], string> = {
   key_validated: "Clave validada",
 };
 
-export default function ExamenesClient({ examenes }: { examenes: Exam[] }) {
+export default function ExamenesClient({ examenes, ownerId }: { examenes: Exam[]; ownerId: string }) {
   const router = useRouter();
   const [error, setError] = useState("");
   const [enviando, setEnviando] = useState(false);
+  const [accountError, setAccountError] = useState("");
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [accountDeleted, setAccountDeleted] = useState(false);
+
+  async function finishAccountRemoval() {
+    try {
+      await purgeOwnerQueue(ownerId);
+      await signOut({ callbackUrl: "/login" });
+    } catch {
+      setAccountError("La cuenta ya se eliminó del servidor, pero la cola local no pudo purgarse. Mantén este dispositivo y reintenta la purga antes de cederlo.");
+    }
+  }
 
   async function crear(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -48,7 +62,36 @@ export default function ExamenesClient({ examenes }: { examenes: Exam[] }) {
   async function eliminar(id: string) {
     if (!window.confirm("¿Eliminar este examen y todos sus datos? Esta acción no se puede deshacer.")) return;
     const respuesta = await fetch(`/api/exams/${id}`, { method: "DELETE" });
-    if (respuesta.ok) router.refresh();
+    if (respuesta.ok) {
+      await purgeQueuedResults(ownerId, { examId: id });
+      router.refresh();
+    }
+  }
+
+  async function eliminarCuenta(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!window.confirm("Se eliminarán permanentemente la cuenta y todos sus exámenes, alumnos y resultados. Esta acción es irreversible.")) return;
+    setDeletingAccount(true);
+    setAccountError("");
+    try {
+      const values = new FormData(event.currentTarget);
+      const response = await fetch("/api/account", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: values.get("account-password"), confirmation: values.get("account-confirmation") }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({})) as { error?: string };
+        setAccountError(data.error ?? "No se pudo eliminar la cuenta.");
+        return;
+      }
+      setAccountDeleted(true);
+      await finishAccountRemoval();
+    } catch {
+      setAccountError("No se pudo confirmar la operación. Comprueba el estado de la cuenta y purga su cola local antes de ceder este dispositivo.");
+    } finally {
+      setDeletingAccount(false);
+    }
   }
 
   return (
@@ -64,7 +107,7 @@ export default function ExamenesClient({ examenes }: { examenes: Exam[] }) {
           <input id="numQuestions" name="numQuestions" type="number" min={1} max={100} defaultValue={40} required />
           <label htmlFor="numOptions">Opciones por pregunta (2–26)</label>
           <input id="numOptions" name="numOptions" type="number" min={2} max={26} defaultValue={4} required />
-          {error ? <p className="error">{error}</p> : null}
+          {error ? <p className="error" role="alert">{error}</p> : null}
           <div style={{ marginTop: "0.75rem" }}>
             <button type="submit" disabled={enviando}>
               {enviando ? "Creando…" : "Crear examen"}
@@ -116,6 +159,22 @@ export default function ExamenesClient({ examenes }: { examenes: Exam[] }) {
           </table>
         )}
       </div>
+
+      <section className="tarjeta" aria-labelledby="delete-account-heading">
+        <h2 id="delete-account-heading">Zona de peligro: eliminar cuenta</h2>
+        <p className="aviso">El borrado elimina los datos activos de la cuenta. En este dispositivo también se purgará la cola offline. Otros dispositivos desconectados no pueden borrarse remotamente; al reconectarlos, elimina manualmente sus datos locales. Los backups del proveedor pueden persistir hasta su expiración.</p>
+        {accountDeleted ? <div>
+          <p role="alert">{accountError || "La cuenta fue eliminada."}</p>
+          <button type="button" className="peligro" onClick={() => void finishAccountRemoval()}>Reintentar purga local y cerrar sesión</button>
+        </div> : <form onSubmit={eliminarCuenta}>
+          <label htmlFor="account-password">Contraseña actual</label>
+          <input id="account-password" name="account-password" type="password" autoComplete="current-password" required />
+          <label htmlFor="account-confirmation">Escribe ELIMINAR CUENTA para confirmar</label>
+          <input id="account-confirmation" name="account-confirmation" required pattern="ELIMINAR CUENTA" />
+          {accountError && <p className="error" role="alert">{accountError}</p>}
+          <button type="submit" className="peligro" disabled={deletingAccount}>{deletingAccount ? "Eliminando cuenta…" : "Eliminar cuenta permanentemente"}</button>
+        </form>}
+      </section>
     </>
   );
 }

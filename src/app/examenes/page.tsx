@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { auth, signOut } from "@/auth";
 import { listOwnedExams } from "@/lib/exams";
 import ExamenesClient from "./client";
+import OfflineQueueSync from "./offline-queue-sync";
 
 export const dynamic = "force-dynamic";
 
@@ -30,8 +31,10 @@ export default async function ExamenesPage() {
           </button>
         </form>
       </header>
-      <main className="contenedor">
+      <main id="main-content" className="contenedor">
+        <OfflineQueueSync ownerId={session.user.id} />
         <ExamenesClient
+          ownerId={session.user.id}
           examenes={examenes.map(({ id, title, subject, numQuestions, numOptions, status }) => ({
             id,
             title,

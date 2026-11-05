@@ -5,7 +5,6 @@ import { authAttempts } from "@/db/schema";
 
 const LIMIT = 8;
 const WINDOW_MINUTES = 15;
-const PURGE_PROBABILITY = 0.05;
 
 function hashKey(value: string) {
   return createHash("sha256").update(value).digest("hex");
@@ -13,6 +12,14 @@ function hashKey(value: string) {
 
 export function requestIp(headers: Headers) {
   return headers.get("x-real-ip") ?? headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+}
+
+export async function purgeExpiredAuthAttempts() {
+  const deleted = await getDb()
+    .delete(authAttempts)
+    .where(lt(authAttempts.windowStartedAt, sql`now() - interval '${sql.raw(String(WINDOW_MINUTES))} minutes'`))
+    .returning({ keyHash: authAttempts.keyHash });
+  return deleted.length;
 }
 
 async function countAttempt(key: string) {
@@ -34,12 +41,7 @@ async function countAttempt(key: string) {
 }
 
 export async function checkAuthRateLimit(email: string, ip: string) {
-  // Purga oportunista de ventanas expiradas.
-  if (Math.random() < PURGE_PROBABILITY) {
-    await getDb()
-      .delete(authAttempts)
-      .where(lt(authAttempts.windowStartedAt, sql`now() - interval '${sql.raw(String(WINDOW_MINUTES))} minutes'`));
-  }
+  await purgeExpiredAuthAttempts();
 
   // Dos claves: una global por email (frena fuerza bruta distribuida aunque se
   // falsifique la IP) y otra por email+IP (frena bots desde una sola máquina).

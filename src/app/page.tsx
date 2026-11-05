@@ -2,9 +2,9 @@ import Link from "next/link";
 
 export default function Inicio() {
   return (
-    <main className="contenedor">
+    <main id="main-content" className="contenedor">
       <div className="tarjeta" style={{ marginTop: "2rem" }}>
-        <h2>Correctora UAX</h2>
+        <h1>Correctora UAX</h1>
         <p>
           Corrige exámenes tipo test desde el móvil: fotografía la hoja de respuestas, la app la
           lee y la compara con la clave validada.

@@ -1,15 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { OmrAnswer, OmrProfile, OmrResult } from "@/lib/omr/read";
+import { deleteQueuedResult, listQueuedResults, purgeQueuedResults, saveQueuedResult, type QueuedResult } from "@/lib/offline-queue/indexed-db";
+import { applyQueueDecision, classifyQueueResponse } from "@/lib/offline-queue/queue-state";
 
 type Props = {
   examId: string;
+  ownerId: string;
   numQuestions: number;
   numOptions: number;
   profile: OmrProfile | null;
   initialStudents: Student[];
+  onStudentsChange: (students: Student[]) => void;
+  keyValidated: boolean;
+  onKeyPending: () => void;
 };
 
 type Student = {
@@ -18,6 +24,12 @@ type Student = {
   dni: string;
   savedAt: string | null;
   answers: Array<{ questionNo: number; optionIndex: number | null }> | null;
+  correct: number | null;
+  wrong: number | null;
+  blank: number | null;
+  rawScore: string | null;
+  score: string | null;
+  version: number | null;
 };
 
 type ReviewAnswer = {
@@ -34,7 +46,7 @@ const MAX_SIDE = 2000;
 const LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const FLAGS = { ok: "Leída", blank: "En blanco", multiple: "Varias marcas", faint: "Dudosa" };
 
-export default function OmrReader({ examId, numQuestions, numOptions, profile, initialStudents }: Props) {
+export default function OmrReader({ examId, ownerId, numQuestions, numOptions, profile, initialStudents: students, onStudentsChange, keyValidated, onKeyPending }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const previewRef = useRef<string | null>(null);
@@ -44,7 +56,6 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
   const [error, setError] = useState("");
   const [result, setResult] = useState<OmrResult | null>(null);
   const [preview, setPreview] = useState("");
-  const [students, setStudents] = useState(initialStudents);
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [review, setReview] = useState<ReviewAnswer[] | null>(null);
   const [reviewHasUnsavedChanges, setReviewHasUnsavedChanges] = useState(false);
@@ -54,9 +65,19 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
   const [importing, setImporting] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDni, setNewDni] = useState("");
+  const [queued, setQueued] = useState<QueuedResult[]>([]);
+  const [queueNotice, setQueueNotice] = useState("");
+  const [comparisons, setComparisons] = useState<Record<string, Student | null | undefined>>({});
+  const pendingSaveRef = useRef<{ key: string; body: string } | null>(null);
+  const queuedReplacementRef = useRef<string | null>(null);
+  const queuedPersistedKeyRef = useRef<string | null>(null);
+  const lastAutoRetryRef = useRef(new Map<string, number>());
 
   function reset() {
     operationRef.current += 1;
+    pendingSaveRef.current = null;
+    queuedReplacementRef.current = null;
+    queuedPersistedKeyRef.current = null;
     workerRef.current?.terminate();
     workerRef.current = null;
     if (previewRef.current) URL.revokeObjectURL(previewRef.current);
@@ -79,6 +100,67 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
     if (previewRef.current) URL.revokeObjectURL(previewRef.current);
   }, []);
 
+  const refreshQueue = useCallback(async () => {
+    try { setQueued(await listQueuedResults(ownerId)); }
+    catch { setQueueNotice("No se pudo leer la cola local; comprueba el espacio disponible del navegador."); }
+  }, [ownerId]);
+
+  useEffect(() => {
+    void Promise.resolve().then(refreshQueue);
+    const onOnline = () => { void refreshQueue(); };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [ownerId, refreshQueue]);
+
+  const sendQueued = useCallback(async (entry: QueuedResult, manual = false) => {
+    if (entry.ownerId !== ownerId || entry.status === "blocked") return;
+    if (entry.lastError === "key_pending") {
+      const examResponse = await fetch(`/api/exams/${entry.examId}`);
+      if (!examResponse.ok || ((await examResponse.json() as { status?: string }).status !== "key_validated")) {
+        setQueueNotice("La cola espera que se valide la clave del examen.");
+        return;
+      }
+    }
+    const lastAttempt = lastAutoRetryRef.current.get(entry.id) ?? 0;
+    if (!manual && Date.now() - lastAttempt < 30_000) return;
+    lastAutoRetryRef.current.set(entry.id, Date.now());
+    try {
+      const response = await fetch(`/api/exams/${entry.examId}/results`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": entry.idempotencyKey },
+        body: JSON.stringify({ studentId: entry.studentId, answers: entry.answers, replace: entry.replace, expectedVersion: entry.expectedVersion }),
+      });
+      const responseBody = await response.json().catch(() => ({})) as { code?: string };
+      const decision = classifyQueueResponse(response.status, responseBody.code);
+      const nextEntry = applyQueueDecision(entry, decision);
+      if (decision.action === "ack") {
+        await deleteQueuedResult(ownerId, entry.id);
+        setQueueNotice("Una entrega pendiente se ha sincronizado.");
+        const rosterResponse = await fetch(`/api/exams/${entry.examId}/students`);
+        if (rosterResponse.ok) onStudentsChange((await rosterResponse.json() as { students: Student[] }).students);
+      } else if (decision.action === "discard") {
+        await deleteQueuedResult(ownerId, entry.id);
+        setQueueNotice("Se descartó una entrega local porque el examen o alumno ya no existe.");
+      } else {
+        await saveQueuedResult(nextEntry!);
+      }
+    } catch {
+      await saveQueuedResult({ ...entry, retries: entry.retries + 1, lastError: "network" }).catch(() => undefined);
+    }
+    await refreshQueue();
+  }, [ownerId, onStudentsChange, refreshQueue]);
+
+  useEffect(() => {
+    const retry = () => {
+      if (!navigator.onLine || document.visibilityState !== "visible") return;
+      void listQueuedResults(ownerId).then((items) => items.filter((item) => item.status === "pending").slice(0, 3).forEach((item) => void sendQueued(item)));
+    };
+    window.addEventListener("online", retry);
+    document.addEventListener("visibilitychange", retry);
+    retry();
+    return () => { window.removeEventListener("online", retry); document.removeEventListener("visibilitychange", retry); };
+  }, [ownerId, sendQueued, keyValidated]);
+
   function clearScan() {
     reset();
   }
@@ -97,6 +179,7 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
   }
 
   function selectReviewStudent(studentId: string) {
+    pendingSaveRef.current = null;
     if (studentId !== selectedStudentId && review) {
       setReview((current) => current?.map((answer) => ({ ...answer, confirmed: false })) ?? null);
       setReviewHasUnsavedChanges(true);
@@ -111,7 +194,7 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
     if (!file) return;
     if (!file.type.startsWith("image/")) { setError("Elige una imagen JPG, PNG o WebP."); return; }
     if (file.size > MAX_FILE_SIZE) { setError("La imagen supera 20 MB. Elige una foto más pequeña."); return; }
-    if (!profile) return;
+    if (!profile || !keyValidated) return;
     setBusy(true);
     try {
       const bitmap = await createImageBitmap(file);
@@ -196,7 +279,7 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
       });
       const data = await response.json().catch(() => ({})) as { error?: string; student?: { id: string; name: string; dni: string } };
       if (!response.ok || !data.student) { setStudentError(data.error ?? "No se pudo añadir el alumno."); return; }
-      setStudents((current) => [...current, { ...data.student!, savedAt: null, answers: null }].sort((a, b) => a.name.localeCompare(b.name, "es")));
+      onStudentsChange([...students, { ...data.student!, savedAt: null, answers: null, correct: null, wrong: null, blank: null, rawScore: null, score: null, version: null }].sort((a, b) => a.name.localeCompare(b.name, "es")));
       selectReviewStudent(data.student.id);
       setNewName("");
       setNewDni("");
@@ -227,7 +310,7 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
       const refreshed = await fetch(`/api/exams/${examId}/students`);
       if (refreshed.ok) {
         const roster = await refreshed.json() as { students: Student[] };
-        setStudents(roster.students);
+        onStudentsChange(roster.students);
       }
       setFeedback(`Se importaron ${data.imported ?? 0} alumnos.`);
     } catch {
@@ -246,32 +329,162 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
       return;
     }
     if (!selectedStudentId) { setStudentError("Selecciona un alumno."); return; }
+    if (!keyValidated) { setStudentError("Valida la clave antes de guardar una entrega puntuada."); return; }
     const student = students.find((item) => item.id === selectedStudentId);
     const replacing = Boolean(student?.savedAt);
     if (replacing && !window.confirm(`Este alumno ya tiene una lectura guardada. ¿Reemplazarla? No se conservará historial.`)) return;
+    const body = JSON.stringify({
+      studentId: selectedStudentId,
+      answers: review.map((answer) => ({ questionNo: answer.q, optionIndex: answer.selectedOption })),
+      replace: replacing,
+      expectedVersion: student?.version ?? null,
+    });
+    if (!pendingSaveRef.current || pendingSaveRef.current.body !== body) {
+      pendingSaveRef.current = { key: crypto.randomUUID(), body };
+    }
     setSaving(true);
     try {
+      const replacingQueuedId = queuedReplacementRef.current;
+      if (replacingQueuedId) {
+        const payload = JSON.parse(body) as { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
+        await saveQueuedResult({
+          id: pendingSaveRef.current.key,
+          ownerId,
+          examId,
+          ...payload,
+          idempotencyKey: pendingSaveRef.current.key,
+          createdAt: new Date().toISOString(),
+          status: "pending",
+          retries: 0,
+          lastError: null,
+        });
+        queuedPersistedKeyRef.current = pendingSaveRef.current.key;
+        try {
+          await deleteQueuedResult(ownerId, replacingQueuedId);
+          queuedReplacementRef.current = null;
+        } catch {
+          setQueueNotice("Se guardó la nueva entrega local, pero no se pudo retirar el conflicto anterior; elimínalo tras confirmar el resultado.");
+        }
+        await refreshQueue();
+      }
       const response = await fetch(`/api/exams/${examId}/results`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          studentId: selectedStudentId,
-          answers: review.map((answer) => ({ questionNo: answer.q, optionIndex: answer.selectedOption })),
-          ...(replacing ? { replace: true } : {}),
-        }),
+        headers: { "Content-Type": "application/json", "Idempotency-Key": pendingSaveRef.current.key },
+        body,
       });
-      const data = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) { setStudentError(data.error ?? "No se pudo guardar la lectura."); return; }
-      setStudents((current) => current.map((item) => item.id === selectedStudentId ? {
+      const data = await response.json().catch(() => ({})) as { error?: string; code?: string; result?: Student };
+      if (!response.ok) {
+        if (response.status === 401 || response.status >= 500 || data.code === "key_not_validated") {
+          const payload = JSON.parse(body) as { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
+          await saveQueuedResult({
+            id: pendingSaveRef.current.key,
+            ownerId,
+            examId,
+            ...payload,
+            idempotencyKey: pendingSaveRef.current.key,
+            createdAt: new Date().toISOString(),
+            status: "pending",
+            retries: 0,
+            lastError: response.status === 401 ? "unauthorized" : response.status >= 500 ? "server" : "key_pending",
+          });
+          await refreshQueue();
+          reset();
+          setQueueNotice("Entrega guardada en la cola local. IndexedDB no está cifrada por la aplicación; no cierres sesión en este dispositivo si necesitas sincronizarla.");
+        }
+        if (response.status === 409 && ["exists", "version_conflict", "idempotency_conflict"].includes(data.code ?? "")) {
+          const payload = JSON.parse(body) as { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
+          await saveQueuedResult({
+            id: pendingSaveRef.current.key,
+            ownerId,
+            examId,
+            ...payload,
+            idempotencyKey: pendingSaveRef.current.key,
+            createdAt: new Date().toISOString(),
+            status: "blocked",
+            retries: 0,
+            lastError: data.code as QueuedResult["lastError"],
+          });
+          await refreshQueue();
+          setQueueNotice("La entrega se guardó en la cola local como conflicto. Compara las respuestas antes de reemplazar.");
+        }
+        if (response.status === 404 || response.status === 410) {
+          if (pendingSaveRef.current && queuedPersistedKeyRef.current) {
+            await deleteQueuedResult(ownerId, queuedPersistedKeyRef.current).catch(() => undefined);
+            queuedPersistedKeyRef.current = null;
+          }
+          reset();
+          await refreshQueue();
+          setStudentError("El examen, alumno o entrega ya no existe. Se descartó la copia local asociada.");
+          return;
+        }
+        if (response.status < 500 && response.status !== 401 && data.code !== "key_not_validated" && !["exists", "version_conflict", "idempotency_conflict"].includes(data.code ?? "")) {
+          const payload = JSON.parse(body) as { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
+          await saveQueuedResult({
+            id: pendingSaveRef.current.key,
+            ownerId,
+            examId,
+            ...payload,
+            idempotencyKey: pendingSaveRef.current.key,
+            createdAt: new Date().toISOString(),
+            status: "blocked",
+            retries: 0,
+            lastError: "rejected",
+          });
+          await refreshQueue();
+        }
+        queuedPersistedKeyRef.current = null;
+        if (response.status < 500) pendingSaveRef.current = null;
+        if (data.code === "version_conflict") {
+          reset();
+          const rosterResponse = await fetch(`/api/exams/${examId}/students`);
+          if (rosterResponse.ok) onStudentsChange((await rosterResponse.json() as { students: Student[] }).students);
+          setStudentError("La entrega se modificó en otro dispositivo. Vuelve a abrir la versión actual antes de editarla.");
+        } else {
+          if (data.code === "key_not_validated") onKeyPending();
+          setStudentError(data.error ?? "No se pudo guardar la lectura.");
+        }
+        return;
+      }
+      pendingSaveRef.current = null;
+      if (data.result?.score === null) onKeyPending();
+      const persistedQueueKey = queuedPersistedKeyRef.current;
+      queuedPersistedKeyRef.current = null;
+      if (persistedQueueKey) {
+        try {
+          await deleteQueuedResult(ownerId, persistedQueueKey);
+          await refreshQueue();
+        } catch {
+          setQueueNotice("El servidor confirmó la entrega, pero la copia local no se pudo retirar; elimínala manualmente.");
+        }
+      }
+      onStudentsChange(students.map((item) => item.id === selectedStudentId ? {
         ...item,
-        savedAt: new Date().toISOString(),
+        savedAt: data.result?.savedAt ?? new Date().toISOString(),
         answers: review.map((answer) => ({ questionNo: answer.q, optionIndex: answer.selectedOption })),
+        correct: data.result?.correct ?? null,
+        wrong: data.result?.wrong ?? null,
+        blank: data.result?.blank ?? null,
+        rawScore: data.result?.rawScore ?? null,
+        score: data.result?.score ?? null,
+        version: data.result?.version ?? null,
       } : item));
       setReviewHasUnsavedChanges(false);
       reset();
-      setFeedback("Lectura revisada y guardada. No se almacenó la imagen ni se calculó una nota.");
+      setFeedback(`Entrega guardada. Aciertos ${data.result?.correct ?? 0}, fallos ${data.result?.wrong ?? 0}, blancos ${data.result?.blank ?? 0}; nota ${data.result?.score ?? "pendiente"}. La imagen no se almacenó.`);
     } catch {
-      setStudentError("No se pudo guardar la lectura.");
+      const pending = pendingSaveRef.current;
+      if (pending) {
+        try {
+          const payload = JSON.parse(pending.body) as { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
+          await saveQueuedResult({ id: pending.key, ownerId, examId, ...payload, idempotencyKey: pending.key, createdAt: new Date().toISOString(), status: "pending", retries: 0, lastError: "network" });
+          await refreshQueue();
+          reset();
+          setQueueNotice("Entrega guardada en la cola local. IndexedDB no está cifrada por la aplicación; no cierres sesión en este dispositivo si necesitas sincronizarla.");
+          setStudentError("No se pudo conectar. La entrega revisada quedó guardada localmente para reintentar con la misma clave.");
+        } catch {
+          setStudentError("Falló la conexión y no se pudo escribir en IndexedDB. Mantén esta página abierta y reintenta sin cambiar las respuestas.");
+        }
+      } else setStudentError("No se pudo confirmar la respuesta del servidor. Reintenta sin cambiar las respuestas para consultar el mismo guardado de forma segura.");
     } finally {
       setSaving(false);
     }
@@ -282,7 +495,9 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
     try {
       const response = await fetch(`/api/exams/${examId}/results/${student.id}`, { method: "DELETE" });
       if (!response.ok) { setStudentError("No se pudo eliminar la lectura."); return; }
-      setStudents((current) => current.map((item) => item.id === student.id ? { ...item, savedAt: null, answers: null } : item));
+      await purgeQueuedResults(ownerId, { examId, studentId: student.id });
+      await refreshQueue();
+      onStudentsChange(students.map((item) => item.id === student.id ? { ...item, savedAt: null, answers: null, correct: null, wrong: null, blank: null, rawScore: null, score: null, version: null } : item));
       if (selectedStudentId === student.id) setSelectedStudentId("");
       setFeedback("Lectura eliminada; el alumno sigue en el roster.");
     } catch {
@@ -296,7 +511,9 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
     try {
       const response = await fetch(`/api/exams/${examId}/students/${student.id}?confirmResult=${Boolean(student.savedAt)}`, { method: "DELETE" });
       if (!response.ok) { setStudentError("No se pudo eliminar el alumno."); return; }
-      setStudents((current) => current.filter((item) => item.id !== student.id));
+      await purgeQueuedResults(ownerId, { examId, studentId: student.id });
+      await refreshQueue();
+      onStudentsChange(students.filter((item) => item.id !== student.id));
       if (selectedStudentId === student.id) setSelectedStudentId("");
       setFeedback("Alumno eliminado del roster.");
     } catch {
@@ -313,7 +530,65 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
     setFeedback(`Revisión guardada de ${student.name}. Confirma cada pregunta si haces cambios.`);
   }
 
-  const disabledReason = !profile
+  async function loadQueuedComparison(entry: QueuedResult) {
+    setComparisons((current) => ({ ...current, [entry.id]: undefined }));
+    try {
+      const response = await fetch(`/api/exams/${entry.examId}/students`);
+      if (!response.ok) throw new Error("No se pudo cargar la entrega actual.");
+      const data = await response.json() as { students: Student[] };
+      onStudentsChange(data.students);
+      const student = data.students.find((item) => item.id === entry.studentId) ?? null;
+      setComparisons((current) => ({ ...current, [entry.id]: student }));
+    } catch {
+      setQueueNotice("No se pudo consultar la versión actual. Comprueba la conexión y vuelve a comparar.");
+      setComparisons((current) => { const next = { ...current }; delete next[entry.id]; return next; });
+    }
+  }
+
+  function reopenQueuedForReplacement(entry: QueuedResult, student: Student) {
+    if (student.savedAt && !student.answers) {
+      setQueueNotice("La versión del servidor no incluye respuestas comparables. Puedes descartar la cola, pero no se habilita un reemplazo ciego.");
+      return;
+    }
+    const action = student.savedAt ? "reemplazo de la entrega actual" : "nueva entrega para el alumno pendiente";
+    if (!window.confirm(`Se abrirán las respuestas locales para revisarlas como ${action}. Confirma todas las preguntas; se usará la versión actual y una clave idempotente nueva.`)) return;
+    reset();
+    queuedReplacementRef.current = entry.id;
+    setSelectedStudentId(student.id);
+    setReview(entry.answers.map((answer) => ({
+      q: answer.questionNo,
+      detected: answer.optionIndex,
+      confidence: null,
+      flag: "guardada",
+      selectedOption: answer.optionIndex,
+      confirmed: false,
+    })));
+    setReviewHasUnsavedChanges(true);
+    setFeedback("Respuestas pendientes cargadas. Compara con el estado del servidor, confirma cada pregunta y guarda el reemplazo explícitamente.");
+    window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }
+
+  function optionLabel(optionIndex: number | null | undefined) {
+    return optionIndex === null ? "En blanco" : optionIndex === undefined ? "Sin entrega" : LABELS[optionIndex] ?? `Opción ${optionIndex + 1}`;
+  }
+
+  function queueErrorLabel(code: string | null) {
+    return ({
+      network: "Sin conexión; se reintentará",
+      server: "Error temporal del servidor",
+      unauthorized: "Inicia sesión con la cuenta propietaria",
+      key_pending: "Espera a que se valide la clave",
+      exists: "El alumno ya tiene una entrega",
+      version_conflict: "La entrega cambió en el servidor",
+      idempotency_conflict: "La clave ya se usó con otros datos",
+      rejected: "El servidor rechazó la entrega; requiere revisión",
+      conflict: "Conflicto antiguo; compara antes de reemplazar",
+    } as Record<string, string>)[code ?? ""] ?? "Pendiente de sincronización";
+  }
+
+  const disabledReason = !keyValidated
+    ? "Valida una clave completa antes de corregir hojas."
+    : !profile
     ? "Primero calibra la matriz de este examen."
     : numQuestions > 50
       ? "La lectura está limitada a 50 preguntas hasta disponer de una matriz multipágina."
@@ -359,7 +634,7 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
         </tbody></table></div>
         <p className="vacio">Confirma cada pregunta individualmente. La detección inicial es provisional; no se calcula nota ni se guarda la imagen.</p>
         {studentError && <p className="error" role="alert">{studentError}</p>}
-        <div className="fila-acciones"><button type="submit" disabled={saving || review.some((answer) => !answer.confirmed) || !selectedStudentId}>{saving ? "Guardando…" : "Guardar lectura revisada"}</button><button type="button" className="secundario" onClick={clearScan} disabled={saving}>Cancelar revisión</button></div>
+        <div className="fila-acciones"><button type="submit" disabled={saving || review.some((answer) => !answer.confirmed) || !selectedStudentId || !keyValidated}>{saving ? "Guardando y puntuando…" : "Confirmar entrega y nota"}</button><button type="button" className="secundario" onClick={clearScan} disabled={saving}>Cancelar revisión</button></div>
       </form>}
       </>}
   </section>
@@ -378,10 +653,38 @@ export default function OmrReader({ examId, numQuestions, numOptions, profile, i
       {importing && <span role="status">Validando e importando…</span>}
     </div>
     {feedback && <p className="ok" role="status">{feedback}</p>}
-    {students.length === 0 ? <p className="vacio">Todavía no hay alumnos en el roster.</p> : <div className="omr-table-wrap"><table><thead><tr><th>Alumno</th><th>DNI</th><th>Lectura</th><th>Acciones</th></tr></thead><tbody>
-      {students.map((student) => <tr key={student.id}><td>{student.name}</td><td>{student.dni}</td><td>{student.savedAt ? `Revisada · ${new Date(student.savedAt).toLocaleString("es-ES")}` : "Pendiente"}</td><td><div className="fila-acciones">{student.savedAt && <><button type="button" className="secundario" onClick={() => editSaved(student)}>Abrir / editar</button><button type="button" className="peligro" onClick={() => void deleteResult(student)}>Eliminar lectura</button></>}<button type="button" className="peligro" onClick={() => void deleteStudent(student)}>Eliminar alumno</button></div></td></tr>)}
+    {students.length === 0 ? <p className="vacio">Todavía no hay alumnos en el roster.</p> : <div className="omr-table-wrap"><table><thead><tr><th>Alumno</th><th>DNI</th><th>Estado</th><th>Aciertos</th><th>Fallos</th><th>Blancos</th><th>Bruto</th><th>Nota</th><th>Acciones</th></tr></thead><tbody>
+      {students.map((student) => <tr key={student.id}><td>{student.name}</td><td>{student.dni}</td><td>{student.savedAt ? student.score === null ? "Puntuación pendiente de validar" : `Corregido · ${new Date(student.savedAt).toLocaleString("es-ES")}` : "Pendiente"}</td><td>{student.correct ?? "—"}</td><td>{student.wrong ?? "—"}</td><td>{student.blank ?? "—"}</td><td>{student.rawScore ?? "—"}</td><td>{student.score ?? "—"}</td><td><div className="fila-acciones">{student.savedAt && <><button type="button" className="secundario" onClick={() => editSaved(student)} disabled={!keyValidated}>Abrir / editar</button><button type="button" className="peligro" onClick={() => void deleteResult(student)}>Eliminar entrega</button></>}<button type="button" className="peligro" onClick={() => void deleteStudent(student)}>Eliminar alumno</button></div></td></tr>)}
     </tbody></table></div>}
     {studentError && !review && <p className="error" role="alert">{studentError}</p>}
+  </section>
+
+  <section className="tarjeta" aria-labelledby="offline-queue-heading">
+    <h2 id="offline-queue-heading">Cola local de entregas</h2>
+    <p className="aviso">Las entregas pendientes persisten en este navegador, están particionadas por cuenta y no están cifradas por la aplicación. No se almacena ninguna imagen. En un dispositivo compartido, elimina la cola antes de cederlo.</p>
+    {queueNotice && <p role="status">{queueNotice}</p>}
+    <button type="button" className="secundario" onClick={() => void refreshQueue()}>Actualizar cola</button>
+    <button type="button" className="peligro" onClick={() => { if (window.confirm("¿Eliminar todas las entregas locales de este examen? No se puede deshacer.")) void purgeQueuedResults(ownerId, { examId }).then(refreshQueue); }}>Purgar cola de este examen</button>
+    {queued.filter((entry) => entry.examId === examId).length === 0 ? <p className="vacio">No hay entregas pendientes para este examen.</p> : <ul>{queued.filter((entry) => entry.examId === examId).map((entry) => <li key={entry.id}>
+      Alumno {entry.studentId}; {new Date(entry.createdAt).toLocaleString("es-ES")}; {entry.status === "blocked" ? "Requiere revisión" : queueErrorLabel(entry.lastError)}.
+      {entry.status === "pending" && <button type="button" className="secundario" onClick={() => void sendQueued(entry, true)}>Reintentar</button>}
+      {entry.status === "blocked" && <button type="button" className="secundario" onClick={() => void loadQueuedComparison(entry)}>Comparar respuestas</button>}
+      {entry.status === "blocked" && Object.hasOwn(comparisons, entry.id) && comparisons[entry.id] !== undefined && <div className="omr-table-wrap">
+        {comparisons[entry.id] ? <>
+          <p role="status">Versión actual: {comparisons[entry.id]?.version ?? "desconocida"}. Entrega local creada {new Date(entry.createdAt).toLocaleString("es-ES")}.</p>
+          <table><caption>Comparación pregunta a pregunta: cola local frente al servidor</caption><thead><tr><th scope="col">Pregunta</th><th scope="col">Cola local</th><th scope="col">Servidor</th></tr></thead><tbody>
+            {Array.from({ length: Math.max(numQuestions, entry.answers.length) }, (_, index) => {
+              const questionNo = index + 1;
+              const queuedAnswer = entry.answers.find((answer) => answer.questionNo === questionNo);
+              const serverAnswer = comparisons[entry.id]?.answers?.find((answer) => answer.questionNo === questionNo);
+              return <tr key={questionNo}><th scope="row">{questionNo}</th><td>{optionLabel(queuedAnswer?.optionIndex)}</td><td>{optionLabel(serverAnswer?.optionIndex)}</td></tr>;
+            })}
+          </tbody></table>
+          <button type="button" disabled={!keyValidated} onClick={() => reopenQueuedForReplacement(entry, comparisons[entry.id]!)}>{comparisons[entry.id]?.savedAt ? "Revisar y reemplazar explícitamente" : "Reabrir como nueva entrega"}</button>
+        </> : <p role="status">El alumno ya no aparece en el roster. Descarta la entrada local.</p>}
+      </div>}
+      <button type="button" className="peligro" onClick={() => { if (window.confirm("¿Eliminar definitivamente esta entrega local?")) void deleteQueuedResult(ownerId, entry.id).then(refreshQueue); }}>Eliminar</button>
+    </li>)}</ul>}
   </section>
   </>;
 }

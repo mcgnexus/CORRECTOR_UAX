@@ -18,5 +18,5 @@ export async function POST(_request: Request, context: RouteContext) {
   if (result.status === "invalid") {
     return Response.json({ error: "La clave no está completa o contiene respuestas inválidas.", problems: result.problems }, { status: 422 });
   }
-  return Response.json({ status: "key_validated" });
+  return Response.json({ status: "key_validated", recalculated: result.recalculated });
 }

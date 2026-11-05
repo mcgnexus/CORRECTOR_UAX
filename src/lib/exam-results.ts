@@ -1,7 +1,11 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { examResultAnswers, examResults, exams, examStudents } from "@/db/schema";
+import { answerKeyItems, examResultAnswers, examResults, exams, examStudents, idempotencyKeys } from "@/db/schema";
+import { answerKeyProblems } from "@/lib/answer-key";
+import { getScoringRuleInTransaction } from "@/lib/exam-scoring";
+import { hashReviewedRequest } from "@/lib/idempotency";
 import { normalizeStudent, parseRosterCsv, validateReviewedAnswers } from "@/lib/exam-roster";
+import { calculateScore } from "@/lib/scoring";
 
 export async function listOwnedExamRoster(ownerId: string, examId: string) {
   const db = getDb();
@@ -12,6 +16,12 @@ export async function listOwnedExamRoster(ownerId: string, examId: string) {
       dni: examStudents.dni,
       createdAt: examStudents.createdAt,
       savedAt: examResults.savedAt,
+      correct: examResults.correct,
+      wrong: examResults.wrong,
+      blank: examResults.blank,
+      rawScore: examResults.rawScore,
+      score: examResults.score,
+      version: examResults.version,
     })
     .from(examStudents)
     .innerJoin(exams, eq(exams.id, examStudents.examId))
@@ -85,10 +95,10 @@ export async function deleteOwnedStudent(ownerId: string, examId: string, studen
   });
 }
 
-export async function saveOwnedReviewedResult(ownerId: string, examId: string, input: unknown) {
+export async function saveOwnedReviewedResult(ownerId: string, examId: string, input: unknown, idempotencyKey: string) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { status: "invalid" as const, message: "La lectura no tiene un formato válido." };
   const data = input as Record<string, unknown>;
-  if (Object.keys(data).some((key) => !["studentId", "answers", "replace"].includes(key))) {
+  if (Object.keys(data).some((key) => !["studentId", "answers", "replace", "expectedVersion"].includes(key)) || !("expectedVersion" in data)) {
     return { status: "invalid" as const, message: "La lectura contiene campos no permitidos." };
   }
   if (typeof data.studentId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(data.studentId)) {
@@ -96,33 +106,68 @@ export async function saveOwnedReviewedResult(ownerId: string, examId: string, i
   }
   const studentId = data.studentId;
   if (data.replace !== undefined && typeof data.replace !== "boolean") return { status: "invalid" as const, message: "La confirmación de reemplazo no es válida." };
+  if (data.expectedVersion !== null && (!Number.isInteger(data.expectedVersion) || (data.expectedVersion as number) < 1)) {
+    return { status: "invalid" as const, message: "La versión de la entrega no es válida." };
+  }
 
   return getDb().transaction(async (tx) => {
     const locked = await tx.execute(sql`select id from exams where id = ${examId} and owner_id = ${ownerId} for update`);
     if (locked.length === 0) return { status: "not_found" as const };
-    const [exam] = await tx.select({ numQuestions: exams.numQuestions, numOptions: exams.numOptions }).from(exams).where(eq(exams.id, examId)).limit(1);
-    const validation = validateReviewedAnswers(data.answers, exam.numQuestions, exam.numOptions);
-    if (!validation.success) return { status: "invalid" as const, message: validation.message };
+    const [exam] = await tx.select({ status: exams.status, numQuestions: exams.numQuestions, numOptions: exams.numOptions }).from(exams).where(eq(exams.id, examId)).limit(1);
+    const requestHash = hashReviewedRequest({
+      studentId,
+      answers: data.answers,
+      replace: data.replace === true,
+      expectedVersion: data.expectedVersion as number | null,
+    });
+
+    const [previousRequest] = await tx.select().from(idempotencyKeys).where(and(
+      eq(idempotencyKeys.ownerId, ownerId),
+      eq(idempotencyKeys.examId, examId),
+      eq(idempotencyKeys.key, idempotencyKey),
+    )).limit(1);
+    if (previousRequest) {
+      if (previousRequest.requestHash !== requestHash) return { status: "idempotency_conflict" as const };
+      const [currentResult] = await tx.select().from(examResults).where(eq(examResults.studentId, previousRequest.studentId)).limit(1);
+      return currentResult
+        ? { status: "saved" as const, replayed: true, result: currentResult }
+        : { status: "replayed_deleted" as const };
+    }
+    const validatedAnswers = validateReviewedAnswers(data.answers, exam.numQuestions, exam.numOptions);
+    if (!validatedAnswers.success) return { status: "invalid" as const, message: validatedAnswers.message };
+    if (exam.status !== "key_validated") return { status: "key_not_validated" as const };
+    const validation = validatedAnswers;
+    const answerKey = await tx.select({ questionNo: answerKeyItems.questionNo, correctOption: answerKeyItems.correctOption }).from(answerKeyItems).where(eq(answerKeyItems.examId, examId));
+    if (answerKeyProblems(answerKey.map((item) => ({ q: item.questionNo, answer: item.correctOption })), exam.numQuestions, exam.numOptions).length) {
+      return { status: "key_invalid" as const };
+    }
+    const rule = await getScoringRuleInTransaction(tx, examId);
+    const score = calculateScore({ answers: validation.answers, answerKey, numQuestions: exam.numQuestions, numOptions: exam.numOptions, rule });
+    if (!score.success) return { status: "invalid" as const, message: score.message };
     const [student] = await tx
       .select({ id: examStudents.id })
       .from(examStudents)
       .where(and(eq(examStudents.id, studentId), eq(examStudents.examId, examId)))
       .limit(1);
     if (!student) return { status: "student_not_found" as const };
-    const [existing] = await tx.select({ studentId: examResults.studentId }).from(examResults).where(eq(examResults.studentId, student.id)).limit(1);
+    const [existing] = await tx.select({ studentId: examResults.studentId, version: examResults.version }).from(examResults).where(eq(examResults.studentId, student.id)).limit(1);
     if (existing && data.replace !== true) return { status: "exists" as const };
+    if (existing && data.expectedVersion !== existing.version) return { status: "version_conflict" as const };
+    if (!existing && data.expectedVersion !== null) return { status: "version_conflict" as const };
+    const version = existing ? existing.version + 1 : 1;
     if (existing) {
-      await tx.update(examResults).set({ savedAt: new Date() }).where(eq(examResults.studentId, student.id));
+      await tx.update(examResults).set({ ...score.summary, version, savedAt: new Date() }).where(eq(examResults.studentId, student.id));
       await tx.delete(examResultAnswers).where(eq(examResultAnswers.studentId, student.id));
     } else {
-      await tx.insert(examResults).values({ studentId: student.id });
+      await tx.insert(examResults).values({ studentId: student.id, ...score.summary, version });
     }
     await tx.insert(examResultAnswers).values(validation.answers.map((answer) => ({
       studentId: student.id,
       questionNo: answer.questionNo,
       selectedOption: answer.optionIndex,
     })));
-    return { status: "saved" as const };
+    await tx.insert(idempotencyKeys).values({ ownerId, examId, key: idempotencyKey, requestHash, studentId: student.id });
+    return { status: "saved" as const, replayed: false, result: { studentId: student.id, ...score.summary, version, savedAt: new Date() } };
   });
 }
 

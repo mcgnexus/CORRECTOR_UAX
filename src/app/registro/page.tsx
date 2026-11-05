@@ -29,9 +29,9 @@ export default function RegistroPage() {
   }
 
   return (
-    <main className="contenedor">
+    <main id="main-content" className="contenedor">
       <div className="tarjeta">
-        <h2>Crear cuenta de profesor</h2>
+        <h1>Crear cuenta de profesor</h1>
         <p className="vacio">
           Elige una contraseña de al menos 12 caracteres. En esta versión no hay verificación de
           correo ni recuperación automática de la cuenta.
@@ -51,7 +51,7 @@ export default function RegistroPage() {
             minLength={12}
             maxLength={128}
           />
-          {error ? <p className="error">{error}</p> : null}
+          {error ? <p className="error" role="alert">{error}</p> : null}
           <div className="fila-acciones" style={{ marginTop: "1rem" }}>
             <button type="submit" disabled={enviando}>
               {enviando ? "Creando…" : "Crear cuenta"}

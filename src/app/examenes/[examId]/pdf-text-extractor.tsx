@@ -137,7 +137,7 @@ export default function PdfTextExtractor({ onText }: Props) {
           <button type="button" className="secundario" onClick={cancelar}>Cancelar</button>
         </div>
       ) : estado ? <p className="vacio">{estado}</p> : null}
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       <p className="vacio">El archivo permanece en este dispositivo. Si una página no tiene texto seleccionable, se aplica OCR local en español.</p>
     </div>
   );

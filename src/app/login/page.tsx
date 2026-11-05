@@ -30,15 +30,15 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="contenedor">
+    <main id="main-content" className="contenedor">
       <div className="tarjeta">
-        <h2>Iniciar sesión</h2>
+        <h1>Iniciar sesión</h1>
         <form onSubmit={onSubmit}>
           <label htmlFor="email">Correo electrónico</label>
           <input id="email" name="email" type="email" autoComplete="email" required />
           <label htmlFor="password">Contraseña</label>
           <input id="password" name="password" type="password" autoComplete="current-password" required />
-          {error ? <p className="error">{error}</p> : null}
+          {error ? <p className="error" role="alert">{error}</p> : null}
           <div className="fila-acciones" style={{ marginTop: "1rem" }}>
             <button type="submit" disabled={enviando}>
               {enviando ? "Comprobando…" : "Entrar"}

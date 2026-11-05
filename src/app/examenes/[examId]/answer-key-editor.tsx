@@ -17,7 +17,17 @@ type Exam = {
   status: "draft" | "key_pending" | "key_validated";
 };
 
-export default function AnswerKeyEditor({ examen, initialAnswers }: { examen: Exam; initialAnswers: Answer[] }) {
+export default function AnswerKeyEditor({
+  examen,
+  initialAnswers,
+  onDraftSaved,
+  onValidated,
+}: {
+  examen: Exam;
+  initialAnswers: Answer[];
+  onDraftSaved?: () => void;
+  onValidated?: (recalculated: number) => void;
+}) {
   const [answers, setAnswers] = useState<Answer[]>(() => {
     const existing = new Map(initialAnswers.map((item) => [item.q, item]));
     return Array.from({ length: examen.numQuestions }, (_, index) =>
@@ -36,6 +46,7 @@ export default function AnswerKeyEditor({ examen, initialAnswers }: { examen: Ex
   const [error, setError] = useState("");
   const [mensaje, setMensaje] = useState("");
   const [status, setStatus] = useState(examen.status);
+  const [generationFailed, setGenerationFailed] = useState(false);
 
   const opciones = Array.from({ length: examen.numOptions }, (_, index) => String.fromCharCode(65 + index));
   const completada = answers.every((item) => opciones.includes(item.answer));
@@ -52,6 +63,7 @@ export default function AnswerKeyEditor({ examen, initialAnswers }: { examen: Ex
   async function generar() {
     setError("");
     setMensaje("");
+    setGenerationFailed(false);
     setBusy(true);
     try {
       const response = await fetch(`/api/exams/${examen.id}/key/generate`, {
@@ -65,13 +77,16 @@ export default function AnswerKeyEditor({ examen, initialAnswers }: { examen: Ex
       };
       if (!response.ok || !data.answers) {
         setError(data.error ?? "No se pudo generar la clave.");
+        setGenerationFailed(true);
         return;
       }
       setAnswers(data.answers.map((item) => ({ ...item, editedByTeacher: false })));
       setDirty(true);
+      setGenerationFailed(false);
       setMensaje("Propuesta generada. Revísala y guárdala antes de validarla.");
     } catch {
       setError("No se pudo conectar con la aplicación. Inténtalo de nuevo.");
+      setGenerationFailed(true);
     } finally {
       setBusy(false);
     }
@@ -97,6 +112,7 @@ export default function AnswerKeyEditor({ examen, initialAnswers }: { examen: Ex
         return;
       }
       setStatus("key_pending");
+      onDraftSaved?.();
       setDirty(false);
       setMensaje("Borrador guardado. La clave aún no está validada.");
     } catch {
@@ -123,9 +139,10 @@ export default function AnswerKeyEditor({ examen, initialAnswers }: { examen: Ex
         setError(saveData.error ?? "No se pudo guardar la clave.");
         return;
       }
+      onDraftSaved?.();
 
       const response = await fetch(`/api/exams/${examen.id}/key/validate`, { method: "POST" });
-      const data = (await response.json().catch(() => ({}))) as { error?: string; problems?: string[] };
+      const data = (await response.json().catch(() => ({}))) as { error?: string; problems?: string[]; recalculated?: number };
       if (!response.ok) {
         setStatus("key_pending");
         setDirty(false);
@@ -133,8 +150,9 @@ export default function AnswerKeyEditor({ examen, initialAnswers }: { examen: Ex
         return;
       }
       setStatus("key_validated");
+      onValidated?.(data.recalculated ?? 0);
       setDirty(false);
-      setMensaje("Clave validada. Ya se puede usar para corregir el examen.");
+      setMensaje(`Clave validada. Se recalcularon ${data.recalculated ?? 0} entregas.`);
     } catch {
       setError("No se pudo conectar con la aplicación. La clave no se ha confirmado como validada.");
     } finally {
@@ -175,7 +193,7 @@ export default function AnswerKeyEditor({ examen, initialAnswers }: { examen: Ex
           Entiendo que al generar se enviará únicamente este texto del examen a DeepSeek; no se enviará el PDF ni datos de alumnos.
         </label>
         <button type="button" onClick={() => void generar()} disabled={busy || !confirmacionEnvio || !textoUtil}>
-          {busy ? "Procesando…" : "Generar clave con DeepSeek"}
+          {busy ? "Procesando…" : generationFailed ? "Reintentar generación con DeepSeek" : "Generar clave con DeepSeek"}
         </button>
       </section>
 

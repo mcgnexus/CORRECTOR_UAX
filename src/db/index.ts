@@ -16,3 +16,10 @@ export function getDb() {
 
   return drizzle(client, { schema });
 }
+
+export async function closeDb() {
+  if (!client) return;
+  const current = client;
+  client = undefined;
+  await current.end({ timeout: 5 });
+}

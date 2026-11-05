@@ -2,6 +2,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { answerKeyItems, exams } from "@/db/schema";
 import { answerKeyProblems, parseAnswerKeyPayload } from "@/lib/answer-key";
+import { getScoringRuleInTransaction, invalidateExamResults, recalculateExamResults } from "@/lib/exam-scoring";
 
 export async function listOwnedAnswerKey(ownerId: string, examId: string) {
   return getDb()
@@ -53,6 +54,7 @@ export async function saveOwnedAnswerKeyDraft(ownerId: string, examId: string, p
       .update(exams)
       .set({ status: "key_pending", updatedAt: new Date() })
       .where(and(eq(exams.id, examId), eq(exams.ownerId, ownerId)));
+    await invalidateExamResults(tx, examId);
     return { status: "saved" as const };
   });
 }
@@ -80,10 +82,20 @@ export async function validateOwnedAnswerKey(ownerId: string, examId: string) {
     const problems = answerKeyProblems(answers, exam.numQuestions, exam.numOptions);
     if (problems.length > 0) return { status: "invalid" as const, problems };
 
+    const rule = await getScoringRuleInTransaction(tx, examId);
+    const recalculated = await recalculateExamResults(
+      tx,
+      examId,
+      exam.numQuestions,
+      exam.numOptions,
+      answers.map((answer) => ({ questionNo: answer.q, correctOption: answer.answer })),
+      rule,
+    );
+
     await tx
       .update(exams)
       .set({ status: "key_validated", updatedAt: new Date() })
       .where(and(eq(exams.id, examId), eq(exams.ownerId, ownerId)));
-    return { status: "validated" as const };
+    return { status: "validated" as const, recalculated };
   });
 }

@@ -13,3 +13,9 @@ IMG-*.jpg
 *.pdf
 *.jpg
 *.jpeg
+
+test-results/
+playwright-report/
+.vercel/
+.vercel
+.env*

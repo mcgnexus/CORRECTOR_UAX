@@ -3,9 +3,9 @@
   --azul-suave: #457b9d;
   --papel: #f8f7f3;
   --tinta: #16202b;
-  --acento: #e63946;
-  --ok: #2a9d8f;
-  --borde: #d9d5cb;
+  --acento: #be2938;
+  --ok: #176d63;
+  --borde: #858a90;
   --radio: 10px;
 }
 
@@ -59,6 +59,7 @@ body {
   margin-bottom: 1rem;
 }
 
+.tarjeta h1,
 h2 {
   font-size: 1.05rem;
   margin: 0 0 0.75rem;
@@ -83,6 +84,8 @@ input {
 }
 
 input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
 button:focus-visible,
 a:focus-visible {
   outline: 3px solid var(--azul-suave);
@@ -98,6 +101,37 @@ button {
   cursor: pointer;
   background: var(--azul);
   color: #fff;
+  touch-action: manipulation;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(0.9);
+}
+
+a {
+  text-underline-offset: 0.15em;
+  touch-action: manipulation;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+.skip-link {
+  position: fixed;
+  z-index: 1000;
+  inset-block-start: 0.5rem;
+  inset-inline-start: 0.5rem;
+  transform: translateY(-160%);
+  padding: 0.65rem 1rem;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--azul);
+  font-weight: 700;
+}
+
+.skip-link:focus-visible {
+  transform: translateY(0);
 }
 
 button.secundario {
@@ -250,6 +284,35 @@ td {
   display: grid;
   gap: 0.45rem;
   margin: 1rem 0;
+}
+
+.export-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 1.25rem;
+  margin-top: 1rem;
+}
+
+.export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.export-link {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--azul);
+  border-radius: 8px;
+  padding: 0.55rem 0.85rem;
+  background: var(--azul);
+  color: #fff;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.export-link:hover {
+  filter: brightness(0.95);
 }
 
 .omr-table-wrap td .fila-acciones {

@@ -3,6 +3,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   primaryKey,
   pgEnum,
   pgTable,
@@ -95,10 +96,27 @@ export const examStudents = pgTable(
   ],
 );
 
+export const scoringRules = pgTable("scoring_rules", {
+  examId: uuid("exam_id")
+    .primaryKey()
+    .references(() => exams.id, { onDelete: "cascade" }),
+  pointsCorrect: numeric("points_correct", { precision: 18, scale: 4 }).notNull(),
+  pointsWrong: numeric("points_wrong", { precision: 18, scale: 4 }).notNull(),
+  pointsBlank: numeric("points_blank", { precision: 18, scale: 4 }).notNull(),
+  maxScore: numeric("max_score", { precision: 18, scale: 4 }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const examResults = pgTable("exam_results", {
   studentId: uuid("student_id")
     .primaryKey()
     .references(() => examStudents.id, { onDelete: "cascade" }),
+  correct: integer("correct"),
+  wrong: integer("wrong"),
+  blank: integer("blank"),
+  rawScore: numeric("raw_score", { precision: 20, scale: 4 }),
+  score: numeric("score", { precision: 18, scale: 2 }),
+  version: integer("version").notNull().default(1),
   savedAt: timestamp("saved_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -112,6 +130,28 @@ export const examResultAnswers = pgTable(
     selectedOption: integer("selected_option"),
   },
   (table) => [primaryKey({ columns: [table.studentId, table.questionNo] })],
+);
+
+export const idempotencyKeys = pgTable(
+  "idempotency_keys",
+  {
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    examId: uuid("exam_id")
+      .notNull()
+      .references(() => exams.id, { onDelete: "cascade" }),
+    key: varchar("key", { length: 36 }).notNull(),
+    requestHash: varchar("request_hash", { length: 64 }).notNull(),
+    studentId: uuid("student_id")
+      .notNull()
+      .references(() => examStudents.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerId, table.examId, table.key] }),
+    index("idempotency_keys_student_idx").on(table.studentId),
+  ],
 );
 
 export const authAttempts = pgTable(
