@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { calibrateMatrix, markersFromPoints, type MatrixCalibration, type Point } from "@/lib/matrix/detect";
+import { bubblePixelRadius, calibrateMatrix, markersFromPoints, projectMatrixPoint, type MatrixCalibration, type Point } from "@/lib/matrix/detect";
 
 type Profile = {
   bubbles: MatrixCalibration["bubbles"];
@@ -17,6 +17,7 @@ type Props = {
   numQuestions: number;
   numOptions: number;
   initialProfile: Profile | null;
+  onProfileChange?: (profile: Profile | null) => void;
 };
 
 const MAX_SIDE = 1600;
@@ -33,11 +34,7 @@ function toGray(data: Uint8ClampedArray) {
   return gray;
 }
 
-function clamp01(value: number) {
-  return Math.max(0, Math.min(1, value));
-}
-
-export default function MatrixCalibrator({ examId, numQuestions, numOptions, initialProfile }: Props) {
+export default function MatrixCalibrator({ examId, numQuestions, numOptions, initialProfile, onProfileChange }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bitmapRef = useRef<ImageBitmap | null>(null);
   const sourceRef = useRef<ImageData | null>(null);
@@ -59,11 +56,16 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
       bubbleRadius: detected.bubbleRadius * grid.radius,
       bubbles: detected.bubbles.map((bubble) => ({
         ...bubble,
-        x: clamp01(0.5 + (bubble.x - 0.5) * grid.scaleX + grid.offsetX / 100),
-        y: clamp01(0.5 + (bubble.y - 0.5) * grid.scaleY + grid.offsetY / 100),
+        x: 0.5 + (bubble.x - 0.5) * grid.scaleX + grid.offsetX / 100,
+        y: 0.5 + (bubble.y - 0.5) * grid.scaleY + grid.offsetY / 100,
       })),
     };
   }, [detected, grid]);
+
+  const gridOutOfBounds = useMemo(
+    () => Boolean(calibration && calibration.bubbles.some((bubble) => bubble.x < 0 || bubble.x > 1 || bubble.y < 0 || bubble.y > 1)),
+    [calibration],
+  );
 
   function drawOverlay() {
     const canvas = canvasRef.current;
@@ -73,7 +75,6 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
     if (!context) return;
     context.putImageData(source, 0, 0);
     const width = canvas.width;
-    const height = canvas.height;
     const scale = width / MAX_SIDE;
     context.lineWidth = Math.max(2, width / 500);
 
@@ -83,11 +84,27 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
         const size = Math.max(10, marker.size);
         context.strokeRect(marker.x - size / 2, marker.y - size / 2, size, size);
       }
+      const radius = bubblePixelRadius(calibration.bubbleRadius, calibration.markers);
       context.strokeStyle = BUBBLE_COLOR;
-      for (const bubble of calibration.bubbles) {
+      const centers = calibration.bubbles.map((bubble) => projectMatrixPoint(calibration.markers, bubble.x, bubble.y));
+      for (const center of centers) {
         context.beginPath();
-        context.arc(bubble.x * width, bubble.y * height, Math.max(3, calibration.bubbleRadius * width), 0, Math.PI * 2);
+        context.arc(center.x, center.y, Math.max(3, radius), 0, Math.PI * 2);
         context.stroke();
+      }
+      const rows = calibration.rowsPerBlock;
+      const labels: Array<{ text: string; point: Point }> = [];
+      if (centers[0]) labels.push({ text: `q1 · A`, point: centers[0] });
+      const lastLeft = calibration.bubbles.findLast((bubble) => bubble.questionNo <= rows && bubble.optionIndex === calibration.optionsPerBlock - 1);
+      if (lastLeft) labels.push({ text: `q${lastLeft.questionNo} · ${String.fromCharCode(65 + lastLeft.optionIndex)}`, point: projectMatrixPoint(calibration.markers, lastLeft.x, lastLeft.y) });
+      const firstRight = calibration.bubbles.find((bubble) => bubble.questionNo === rows + 1 && bubble.optionIndex === 0);
+      if (firstRight) labels.push({ text: `q${firstRight.questionNo} · A`, point: projectMatrixPoint(calibration.markers, firstRight.x, firstRight.y) });
+      const lastBubble = calibration.bubbles[calibration.bubbles.length - 1];
+      if (lastBubble) labels.push({ text: `q${lastBubble.questionNo} · ${String.fromCharCode(65 + lastBubble.optionIndex)}`, point: projectMatrixPoint(calibration.markers, lastBubble.x, lastBubble.y) });
+      context.font = `${Math.max(12, Math.round(width / 70))}px sans-serif`;
+      context.fillStyle = CLICK_COLOR;
+      for (const label of labels) {
+        context.fillText(label.text, label.point.x + radius + 4, label.point.y + radius);
       }
     }
 
@@ -112,6 +129,10 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
     drawOverlay();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calibration, pendingClicks]);
+
+  useEffect(() => () => {
+    bitmapRef.current?.close();
+  }, []);
 
   async function render(bitmap: ImageBitmap, angle: number) {
     const canvas = canvasRef.current;
@@ -160,7 +181,7 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
     setManualMode(false);
     setGrid({ offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, radius: 1 });
     setSaved(false);
-    setMensaje(`Rejilla detectada: ${result.calibration.blocks} bloques × ${result.calibration.rowsPerBlock} filas × ${result.calibration.optionsPerBlock} opciones (${result.calibration.bubbles.length} burbujas). Ajusta el desplazamiento si no coincide con la plantilla.`);
+    setMensaje(`Rejilla detectada: ${result.calibration.blocks} bloques × ${result.calibration.rowsPerBlock} filas × ${result.calibration.optionsPerBlock} opciones (${result.calibration.bubbles.length} burbujas). Compara las marcas q1/q25/q26/q50 con la plantilla antes de guardar.`);
   }
 
   async function procesar(file?: File) {
@@ -196,7 +217,7 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
     if (!bitmap) return;
     setBusy(true);
     try {
-        await render(bitmap, (rotation + delta + 360) % 360);
+      await render(bitmap, (rotation + delta + 360) % 360);
       runDetection();
     } catch {
       setError("No se pudo rotar la imagen.");
@@ -209,7 +230,7 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
     setManualMode(true);
     setDetected(null);
     setPendingClicks([]);
-    setMensaje("Haz clic en las cuatro esquinas de las marcas de registro, en cualquier orden.");
+    setMensaje("Haz clic en el centro de las cuatro marcas negras (cuadrados), en cualquier orden.");
     setError("");
   }
 
@@ -230,30 +251,38 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
     runDetection(next);
   }
 
+  function updateGrid(patch: Partial<typeof grid>) {
+    setGrid((current) => ({ ...current, ...patch }));
+    setSaved(false);
+  }
+
   async function guardar() {
-    if (!calibration) return;
+    if (!calibration || gridOutOfBounds) return;
     setError("");
     setMensaje("");
     setBusy(true);
     try {
+      const payload = {
+        bubbles: calibration.bubbles,
+        bubbleRadius: calibration.bubbleRadius,
+        rowsPerBlock: calibration.rowsPerBlock,
+        blocks: calibration.blocks,
+        optionsPerBlock: calibration.optionsPerBlock,
+      };
       const response = await fetch(`/api/exams/${examId}/matrix`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          bubbles: calibration.bubbles,
-          bubbleRadius: calibration.bubbleRadius,
-          rowsPerBlock: calibration.rowsPerBlock,
-          blocks: calibration.blocks,
-          optionsPerBlock: calibration.optionsPerBlock,
-        }),
+        body: JSON.stringify(payload),
       });
       const data = (await response.json().catch(() => ({}))) as { error?: string; problems?: string[] };
       if (!response.ok) {
         setError([data.error, ...(data.problems ?? [])].filter(Boolean).join(" "));
         return;
       }
+      const confirmed = { ...payload, updatedAt: new Date().toISOString() };
       setSaved(true);
       setMensaje("Calibración guardada para este examen. La imagen no se ha subido.");
+      onProfileChange?.(confirmed);
     } catch {
       setError("No se pudo guardar la calibración. Inténtalo de nuevo.");
     } finally {
@@ -274,6 +303,7 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
       setSaved(false);
       setDetected(null);
       setMensaje("Calibración eliminada.");
+      onProfileChange?.(null);
     } finally {
       setBusy(false);
     }
@@ -283,13 +313,16 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
     <div className="tarjeta" id="calibracion">
       <h2>Calibración de la matriz</h2>
       <p className="vacio">
-        Sube una foto o escaneo de la hoja de respuestas en blanco. Puedes rotarla y marcar manualmente las cuatro
-        esquinas si la detección automática falla. La imagen nunca sale de este dispositivo.
+        Sube una foto o escaneo de la hoja de respuestas en blanco. Puedes rotarla y marcar manualmente el centro de las
+        cuatro marcas negras si la detección automática falla. La imagen nunca sale de este dispositivo.
       </p>
       <p className="vacio">
         Estado: {saved ? "calibrada" : "sin calibrar"}
         {initialProfile ? ` · actualizada el ${new Date(initialProfile.updatedAt).toLocaleString("es-ES")}` : ""}
       </p>
+      {initialProfile && !detected ? (
+        <p className="aviso">Si la rejilla guardada no coincide con la plantilla, recalibra con esta pantalla: la superposición anterior usaba una proyección distinta.</p>
+      ) : null}
 
       <label htmlFor="matrix-image">Imagen de la matriz</label>
       <input
@@ -314,7 +347,7 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
       <canvas
         ref={canvasRef}
         className="matriz-lienzo"
-        aria-label="Vista previa de la calibración. Haz clic en las cuatro esquinas cuando esté activo el marcado manual."
+        aria-label="Vista previa de la calibración. Haz clic en el centro de las cuatro marcas cuando esté activo el marcado manual."
         onClick={onCanvasClick}
         style={manualMode ? { cursor: "crosshair" } : undefined}
       />
@@ -323,23 +356,24 @@ export default function MatrixCalibrator({ examId, numQuestions, numOptions, ini
         <fieldset className="matriz-ajustes">
           <legend>Ajuste fino de la rejilla</legend>
           <label htmlFor="grid-offset-x">Desplazamiento horizontal ({grid.offsetX}%)</label>
-          <input id="grid-offset-x" type="range" min={-10} max={10} step={0.2} value={grid.offsetX} onChange={(event) => setGrid((current) => ({ ...current, offsetX: Number(event.target.value) }))} />
+          <input id="grid-offset-x" type="range" min={-10} max={10} step={0.2} value={grid.offsetX} onChange={(event) => updateGrid({ offsetX: Number(event.target.value) })} />
           <label htmlFor="grid-offset-y">Desplazamiento vertical ({grid.offsetY}%)</label>
-          <input id="grid-offset-y" type="range" min={-10} max={10} step={0.2} value={grid.offsetY} onChange={(event) => setGrid((current) => ({ ...current, offsetY: Number(event.target.value) }))} />
+          <input id="grid-offset-y" type="range" min={-10} max={10} step={0.2} value={grid.offsetY} onChange={(event) => updateGrid({ offsetY: Number(event.target.value) })} />
           <label htmlFor="grid-scale-x">Escala horizontal ({grid.scaleX.toFixed(2)}×)</label>
-          <input id="grid-scale-x" type="range" min={0.7} max={1.3} step={0.01} value={grid.scaleX} onChange={(event) => setGrid((current) => ({ ...current, scaleX: Number(event.target.value) }))} />
+          <input id="grid-scale-x" type="range" min={0.7} max={1.3} step={0.01} value={grid.scaleX} onChange={(event) => updateGrid({ scaleX: Number(event.target.value) })} />
           <label htmlFor="grid-scale-y">Escala vertical ({grid.scaleY.toFixed(2)}×)</label>
-          <input id="grid-scale-y" type="range" min={0.7} max={1.3} step={0.01} value={grid.scaleY} onChange={(event) => setGrid((current) => ({ ...current, scaleY: Number(event.target.value) }))} />
+          <input id="grid-scale-y" type="range" min={0.7} max={1.3} step={0.01} value={grid.scaleY} onChange={(event) => updateGrid({ scaleY: Number(event.target.value) })} />
           <label htmlFor="grid-radius">Radio de burbuja ({grid.radius.toFixed(2)}×)</label>
-          <input id="grid-radius" type="range" min={0.5} max={1.8} step={0.05} value={grid.radius} onChange={(event) => setGrid((current) => ({ ...current, radius: Number(event.target.value) }))} />
+          <input id="grid-radius" type="range" min={0.5} max={1.8} step={0.05} value={grid.radius} onChange={(event) => updateGrid({ radius: Number(event.target.value) })} />
+          {gridOutOfBounds ? <p className="error" role="alert">El ajuste saca burbujas fuera del marco de marcas. Corrígelo antes de guardar.</p> : null}
         </fieldset>
       ) : null}
 
       {error ? <p className="error" role="alert">{error}</p> : null}
-      {mensaje ? <p className={calibration ? "ok" : "vacio"} role="status">{mensaje}</p> : null}
+      {mensaje ? <p className={calibration && !gridOutOfBounds ? "ok" : "vacio"} role="status">{mensaje}</p> : null}
 
       <div className="fila-acciones" style={{ marginTop: "0.75rem" }}>
-        <button type="button" onClick={() => void guardar()} disabled={busy || !calibration}>
+        <button type="button" onClick={() => void guardar()} disabled={busy || !calibration || gridOutOfBounds}>
           {busy ? "Guardando…" : "Guardar calibración"}
         </button>
         {saved ? (

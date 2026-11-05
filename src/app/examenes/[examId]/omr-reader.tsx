@@ -63,6 +63,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   const [markerClicks, setMarkerClicks] = useState<Point[]>([]);
   const [detectedMarkers, setDetectedMarkers] = useState<MatrixMarker[] | null>(null);
   const paintParamsRef = useRef({ angle: 0, brightness: 0, contrast: 1 });
+  const [profileAtReadStart, setProfileAtReadStart] = useState(profile);
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [review, setReview] = useState<ReviewAnswer[] | null>(null);
   const [reviewHasUnsavedChanges, setReviewHasUnsavedChanges] = useState(false);
@@ -111,6 +112,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     workerRef.current?.terminate();
     bitmapRef.current?.close();
   }, []);
+
 
   const refreshQueue = useCallback(async () => {
     try { setQueued(await listQueuedResults(ownerId)); }
@@ -290,6 +292,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   }
 
   function startRead(markers: MatrixMarker[]) {
+    setProfileAtReadStart(profile);
     const params = paintParamsRef.current;
     const painted = paint(params.angle, { brightness: params.brightness, contrast: params.contrast });
     const canvas = canvasRef.current;
@@ -780,6 +783,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       {detectedMarkers && !manualMode && <p className="vacio" role="status">Se han localizado las cuatro marcas de registro.</p>}
       {busy && <p role="status">Procesando localmente… {progress}%</p>}
       {error && <p className="error" role="alert">{error}</p>}
+      {review && reviewHasUnsavedChanges && profileAtReadStart !== profile ? <p className="aviso" role="status">La calibración cambió. Se aplicará a la próxima lectura; la revisión actual no se recalcula automáticamente.</p> : null}
       {result && <>
         <p className="ok" role="status">Lectura provisional terminada: {result.answers.length} preguntas. Revisa y confirma todas antes de guardar.</p>
       </>}

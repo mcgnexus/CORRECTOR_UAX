@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import jpeg from "jpeg-js";
-import { calibrateMatrix, type GrayImage } from "../src/lib/matrix/detect";
+import { calibrateMatrix, markerSpans, projectMatrixPoint, type GrayImage } from "../src/lib/matrix/detect";
 
 async function main() {
   const file = process.argv[2];
@@ -39,7 +39,15 @@ async function main() {
   console.log(`Preguntas: ${questions.size}, burbujas: ${calibration.bubbles.length}, radio: ${calibration.bubbleRadius.toFixed(4)}`);
   console.log(`Primera: q1 opción0 (${calibration.bubbles[0].x.toFixed(3)}, ${calibration.bubbles[0].y.toFixed(3)})`);
   const last = calibration.bubbles[calibration.bubbles.length - 1];
-  console.log(`Última: q${last.questionNo} opción${last.optionIndex} (${last.x.toFixed(3)}, ${last.y.toFixed(3)})`);
+  console.log("Última: q" + last.questionNo + " opción" + last.optionIndex + " (" + last.x.toFixed(3) + ", " + last.y.toFixed(3) + ")");
+  const spans = markerSpans(calibration.markers);
+  console.log("Radio en píxeles: " + (calibration.bubbleRadius * spans.min).toFixed(2) + " (span mínimo " + spans.min.toFixed(1) + ")");
+  for (const [questionNo, optionIndex] of [[1, 0], [calibration.rowsPerBlock, calibration.optionsPerBlock - 1], [calibration.rowsPerBlock + 1, 0], [questions.size, calibration.optionsPerBlock - 1]] as const) {
+    const bubble = calibration.bubbles.find((item) => item.questionNo === questionNo && item.optionIndex === optionIndex);
+    if (!bubble) continue;
+    const center = projectMatrixPoint(calibration.markers, bubble.x, bubble.y);
+    console.log("q" + questionNo + " opción" + optionIndex + " -> (" + Math.round(center.x) + ", " + Math.round(center.y) + ") px");
+  }
 }
 
 main().catch((error) => {

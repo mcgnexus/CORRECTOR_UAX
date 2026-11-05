@@ -1,4 +1,4 @@
-import { detectRegistrationMarkers, projectMatrixPoint, type GrayImage, type MatrixMarker } from "@/lib/matrix/detect";
+import { bubblePixelRadius, detectRegistrationMarkers, markerSpans, projectMatrixPoint, type GrayImage, type MatrixMarker } from "@/lib/matrix/detect";
 
 export type OmrProfile = {
   bubbles: Array<{ questionNo: number; optionIndex: number; x: number; y: number }>;
@@ -71,11 +71,10 @@ export function readOmr(
   if (gradient / (samples * 2) < 0.04) throw new Error("La imagen está demasiado borrosa. Mantén el móvil quieto y repite la captura.");
   const markers = manualMarkers && manualMarkers.length === 4 ? manualMarkers : detectRegistrationMarkers(image);
   if (!markers) throw new Error("No se detectan cuatro marcas completas. Puedes marcarlas manualmente en la pantalla.");
-  const spanX = (Math.hypot(markers[1].x - markers[0].x, markers[1].y - markers[0].y) + Math.hypot(markers[3].x - markers[2].x, markers[3].y - markers[2].y)) / 2;
-  const spanY = (Math.hypot(markers[2].x - markers[0].x, markers[2].y - markers[0].y) + Math.hypot(markers[3].x - markers[1].x, markers[3].y - markers[1].y)) / 2;
+  const spans = markerSpans(markers);
   if (image.width < 600 || image.height < 800) throw new Error("La resolución es insuficiente. Acerca la cámara y repite la foto.");
-  if (spanX / image.width < 0.25 || spanY / image.height < 0.45) throw new Error("La hoja aparece recortada o demasiado lejos. Repite la foto incluyendo sus cuatro esquinas.");
-  const radius = Math.max(2, Math.min(spanX, spanY) * profile.bubbleRadius);
+  if (spans.spanX / image.width < 0.25 || spans.spanY / image.height < 0.45) throw new Error("La hoja aparece recortada o demasiado lejos. Repite la foto incluyendo sus cuatro esquinas.");
+  const radius = bubblePixelRadius(profile.bubbleRadius, markers);
   const values = new Map<number, Array<{ option: number; darkness: number }>>();
   for (const bubble of profile.bubbles) {
     if (bubble.questionNo > numQuestions || bubble.optionIndex >= numOptions) continue;

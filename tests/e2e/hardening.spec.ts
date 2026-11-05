@@ -228,6 +228,63 @@ test("synthetic OMR image stays local and only reviewed answers enter IndexedDB 
   expect(localQueue[0].answers).toEqual([{ questionNo: 1, optionIndex: 0 }, { questionNo: 2, optionIndex: 1 }]);
 });
 
+test("calibra la plantilla subida y lee una hoja marcada sin recargar", async ({ page }) => {
+  await signIn(page);
+  await page.goto(`/examenes/${examId}`);
+  const drawSheet = async (filled: Array<[number, number]>) => page.evaluate((marks) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 600;
+    canvas.height = 800;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Canvas no disponible");
+    context.fillStyle = "white";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "black";
+    const rect = (x: number, y: number, w: number, h: number) => context.fillRect(x, y, w, h);
+    const ring = (x: number, y: number, radius: number) => {
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.lineWidth = 2;
+      context.strokeStyle = "black";
+      context.stroke();
+    };
+    rect(40, 30, 520, 4);
+    rect(70, 50, 460, 4);
+    rect(140, 70, 320, 4);
+    for (const [x, y] of [[15, 15], [585, 15], [15, 145], [585, 145]]) rect(x - 7, y - 7, 14, 14);
+    for (const [x, y] of [[90, 160], [510, 160], [90, 600], [510, 600]]) rect(x - 7, y - 7, 14, 14);
+    for (let option = 0; option < 4; option += 1) {
+      rect(140 + option * 50 - 3, 340, 6, 12);
+      rect(330 + option * 50 - 3, 340, 6, 12);
+    }
+    rect(112, 372, 6, 16);
+    rect(302, 372, 6, 16);
+    for (let option = 0; option < 4; option += 1) {
+      ring(140 + option * 50, 380, 8);
+      ring(330 + option * 50, 380, 8);
+    }
+    for (const [x, y] of marks) {
+      context.fillStyle = "black";
+      context.beginPath();
+      context.arc(x, y, 9, 0, Math.PI * 2);
+      context.fill();
+    }
+    return canvas.toDataURL("image/png");
+  }, filled);
+
+  const template = await drawSheet([]);
+  await page.locator("#matrix-image").setInputFiles({ name: "template.png", mimeType: "image/png", buffer: Buffer.from(template.split(",")[1], "base64") });
+  await expect(page.getByRole("status").filter({ hasText: "Rejilla detectada:" })).toBeVisible();
+  await page.getByRole("button", { name: "Guardar calibración" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Calibración guardada" })).toBeVisible();
+
+  const marked = await drawSheet([[140, 380], [430, 380]]);
+  await page.locator("#omr-image").setInputFiles({ name: "marked.png", mimeType: "image/png", buffer: Buffer.from(marked.split(",")[1], "base64") });
+  await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
+  await expect(page.getByLabel("Respuesta final pregunta 1")).toHaveValue("0");
+  await expect(page.getByLabel("Respuesta final pregunta 2")).toHaveValue("2");
+});
+
 test("offline replay survives a reload with identical body and idempotency key, then ACK purges it", async ({ page }) => {
   await signIn(page);
   const entry = queueEntry(pendingStudentId);

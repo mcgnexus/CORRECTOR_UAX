@@ -51,7 +51,7 @@ type ScoringRule = { pointsCorrect: string; pointsWrong: string; pointsBlank: st
 export default function ExamDetalleClient({
   examen,
   clave,
-  matrixProfile,
+  matrixProfile: initialMatrixProfile,
   students,
   scoringRule,
   ownerId,
@@ -68,6 +68,7 @@ export default function ExamDetalleClient({
   const [error, setError] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [roster, setRoster] = useState(students);
+  const [matrixProfile, setMatrixProfile] = useState(initialMatrixProfile);
   const [rule, setRule] = useState(scoringRule);
   const [examStatus, setExamStatus] = useState(examen.status);
   const [guardandoRegla, setGuardandoRegla] = useState(false);
@@ -232,6 +233,7 @@ export default function ExamDetalleClient({
         numQuestions={examen.numQuestions}
         numOptions={examen.numOptions}
         initialProfile={matrixProfile}
+        onProfileChange={setMatrixProfile}
       />
       <OmrReader
         ownerId={ownerId}
