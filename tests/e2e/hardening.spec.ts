@@ -199,9 +199,8 @@ test("synthetic OMR image stays local and only reviewed answers enter IndexedDB 
   await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
   await assertNoAxeViolations(page);
   await page.locator("#omr-student").selectOption(pendingStudentId);
-  const confirmButtons = page.getByRole("button", { name: "Confirmar", exact: true });
-  await confirmButtons.first().click();
-  await confirmButtons.first().click();
+  await page.getByRole("button", { name: "Confirmar todas las respuestas" }).click();
+  await expect(page.getByText("Confirmada", { exact: true })).toHaveCount(2);
   await page.getByRole("button", { name: "Confirmar entrega y nota" }).click();
   await expect(page.getByText("Entrega guardada en la cola local", { exact: false })).toBeVisible();
   await expect(page.locator("canvas.omr-preview")).toBeHidden();

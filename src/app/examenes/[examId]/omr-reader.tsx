@@ -805,7 +805,17 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
             <td>{answer.confirmed ? <span className="ok">Confirmada</span> : <button type="button" className="secundario" onClick={() => setReview((current) => current?.map((item, itemIndex) => itemIndex === index ? { ...item, confirmed: true } : item) ?? null)}>Confirmar</button>}</td>
           </tr>)}
         </tbody></table></div>
-        <p className="vacio">Confirma cada pregunta individualmente. La detección inicial es provisional; no se calcula nota ni se guarda la imagen.</p>
+        <div className="fila-acciones">
+          <button
+            type="button"
+            className="secundario"
+            disabled={busy || saving || review.every((answer) => answer.confirmed)}
+            onClick={() => setReview((current) => current?.map((item) => ({ ...item, confirmed: true })) ?? null)}
+          >
+            Confirmar todas las respuestas
+          </button>
+        </div>
+        <p className="vacio">Confirma cada pregunta o todas a la vez. La detección inicial es provisional; no se calcula nota ni se guarda la imagen.</p>
         {studentError && <p className="error" role="alert">{studentError}</p>}
         <div className="fila-acciones"><button type="submit" disabled={saving || review.some((answer) => !answer.confirmed) || !selectedStudentId || !keyValidated}>{saving ? "Guardando y puntuando…" : "Confirmar entrega y nota"}</button><button type="button" className="secundario" onClick={clearScan} disabled={saving}>Cancelar revisión</button></div>
       </form>}
