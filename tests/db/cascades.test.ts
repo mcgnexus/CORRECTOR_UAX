@@ -79,9 +79,9 @@ test("ownership isolation and student, exam, and account cascades", async () => 
     assert.equal((await listOwnedExams(otherOwner.id)).some((item) => item.id === exam.id), false);
 
     const [studentA, studentB, studentC] = await db.insert(examStudents).values([
-      { examId: exam.id, name: "Fixture A", dni: `${nonce.slice(0, 8)}A` },
-      { examId: exam.id, name: "Fixture B", dni: `${nonce.slice(0, 8)}B` },
-      { examId: exam.id, name: "Fixture C", dni: `${nonce.slice(0, 8)}C` },
+      { examId: exam.id, name: "Fixture A", dni: "00000000T" },
+      { examId: exam.id, name: "Fixture B", dni: "00000001R" },
+      { examId: exam.id, name: "Fixture C", dni: "00000002W" },
     ]).returning({ id: examStudents.id });
     await db.insert(answerKeyItems).values([
       { examId: exam.id, questionNo: 1, correctOption: "A" },
@@ -121,7 +121,7 @@ test("ownership isolation and student, exam, and account cascades", async () => 
     assert.equal((await db.select().from(idempotencyKeys).where(eq(idempotencyKeys.examId, exam.id))).length, 0);
 
     const [accountExam] = await db.insert(exams).values({ ownerId: owner.id, title: "Account cascade fixture", numQuestions: 1, numOptions: 2 }).returning({ id: exams.id });
-    const [accountStudent] = await db.insert(examStudents).values({ examId: accountExam.id, name: "Fixture account", dni: `${nonce.slice(0, 8)}C` }).returning({ id: examStudents.id });
+    const [accountStudent] = await db.insert(examStudents).values({ examId: accountExam.id, name: "Fixture account", dni: "00000002W" }).returning({ id: examStudents.id });
     await db.insert(answerKeyItems).values({ examId: accountExam.id, questionNo: 1, correctOption: "A" });
     await db.insert(scoringRules).values({ examId: accountExam.id, pointsCorrect: "1", pointsWrong: "0", pointsBlank: "0", maxScore: "10" });
     await db.insert(examResults).values({ studentId: accountStudent.id, correct: 1, wrong: 0, blank: 0, rawScore: "1", score: "10", version: 1 });

@@ -312,6 +312,17 @@ td {
   background: #fff8df;
 }
 
+.omr-low-confidence > td:nth-child(3) {
+  background: #eee5ff;
+  color: #49217a;
+  box-shadow: inset 4px 0 #7541a5;
+}
+
+.omr-confidence-label {
+  display: block;
+  font-weight: 700;
+}
+
 .omr-review,
 .omr-student-form {
   display: grid;

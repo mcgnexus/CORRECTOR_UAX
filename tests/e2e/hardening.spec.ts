@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { closeDb, getDb } from "../../src/db";
 import { answerKeyItems, examMatrixProfiles, examResultAnswers, examResults, examStudents, exams, scoringRules, users } from "../../src/db/schema";
 import type { QueuedResult } from "../../src/lib/offline-queue/indexed-db";
+import { applyTonePixels } from "../../src/lib/omr/retouch";
 
 test.describe.configure({ mode: "serial" });
 
@@ -122,8 +123,8 @@ test.beforeAll(async () => {
   const [deletedExam] = await db.insert(exams).values({ ownerId, title: "Stale queue fixture", numQuestions: 2, numOptions: 4, status: "key_validated" }).returning({ id: exams.id });
   deletedExamId = deletedExam.id;
   const students = await db.insert(examStudents).values([
-    { examId, name: "Pending synthetic student", dni: `${nonce.slice(0, 8)}P` },
-    { examId, name: "Conflict synthetic student", dni: `${nonce.slice(0, 8)}C` },
+    { examId, name: "Pending synthetic student", dni: "00000000T" },
+    { examId, name: "Conflict synthetic student", dni: "00000001R" },
   ]).returning({ id: examStudents.id });
   [pendingStudentId, conflictStudentId] = students.map((student) => student.id);
   await db.insert(answerKeyItems).values([
@@ -504,6 +505,29 @@ test("@mobile retoque local conserva revisión, recorte táctil y orientación",
     await page.locator(selector).fill(initial);
     await expect.poll(pixels).toBe(original);
   }
+  const centerPixel = () => canvas.evaluate((element) => {
+    const image = element as HTMLCanvasElement;
+    return Array.from(image.getContext("2d")!.getImageData(Math.floor(image.width / 2), Math.floor(image.height / 2), 1, 1).data);
+  });
+  const checkTone = async (base: number[]) => {
+    const neutral = await pixels();
+    const workerCount = await page.evaluate(() => (window as typeof window & { omrWorkerMessages: number }).omrWorkerMessages);
+    const queue = await readQueueRows(page);
+    const writesBefore = writes.length;
+    for (const [brightness, contrast] of [[20, 1], [0, 0.8], [20, 0.8], [-20, 1.4], [20, 0.8], [0, 1]]) {
+      await page.locator("#omr-brightness").fill(String(brightness));
+      await page.locator("#omr-contrast").fill(String(contrast));
+      const expected = new Uint8ClampedArray(base);
+      applyTonePixels(expected, { brightness, contrast });
+      await expect.poll(centerPixel).toEqual(Array.from(expected));
+    }
+    await expect.poll(pixels).toBe(neutral);
+    expect(await page.evaluate(() => (window as typeof window & { omrWorkerMessages: number }).omrWorkerMessages)).toBe(workerCount);
+    expect(writes.length).toBe(writesBefore);
+    expect(await readQueueRows(page)).toEqual(queue);
+  };
+  await checkTone([208, 208, 208, 255]);
+  await reviewIntact();
   await page.locator("#omr-brightness").focus();
   await page.keyboard.press("ArrowRight");
   await expect(page.locator("#omr-brightness")).toBeFocused();
@@ -565,6 +589,56 @@ test("@mobile retoque local conserva revisión, recorte táctil y orientación",
   }
   await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
   await expect(page.locator("#omr-brightness")).toHaveValue(toneBeforeManual);
+
+  // A second non-sensitive image must invalidate the first image's clean base cache.
+  const replacement = await page.evaluate(async (source) => {
+    const image = new Image();
+    image.src = source;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext("2d")!;
+    context.drawImage(image, 0, 0);
+    context.fillStyle = "rgb(96, 144, 192)";
+    context.fillRect(300, 400, 300, 400);
+    return canvas.toDataURL("image/png");
+  }, image);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("#omr-image").setInputFiles({ name: "replacement-synthetic.png", mimeType: "image/png", buffer: Buffer.from(replacement.split(",")[1], "base64") });
+  await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
+  await expect(page.locator("#omr-brightness")).toHaveValue("0");
+  await expect(page.locator("#omr-contrast")).toHaveValue("1");
+  await checkTone([96, 144, 192, 255]);
+  const finishTransformedRead = async (points: number[][]) => {
+    // This synthetic sheet can require manual corners after a landscape turn.
+    if (await page.getByText("No se detectaron las cuatro marcas.", { exact: false }).isVisible()) {
+      await canvas.scrollIntoViewIfNeeded();
+      const bounds = (await canvas.boundingBox())!;
+      const size = await canvas.evaluate((element) => [(element as HTMLCanvasElement).width, (element as HTMLCanvasElement).height]);
+      for (const [x, y] of points) await canvas.click({ position: { x: bounds.width * x / size[0], y: bounds.height * y / size[1] } });
+    }
+    await expect(page.locator("#omr-brightness")).toBeEnabled();
+    await expect(page.getByRole("status").filter({ hasText: "Lectura provisional terminada" })).toBeVisible();
+  };
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("section").filter({ has: page.getByRole("heading", { name: "Introducir examen del alumno" }) }).getByRole("button", { name: "Girar derecha" }).click();
+  await finishTransformedRead([[60, 60], [1140, 60], [60, 840], [1140, 840]]);
+  expect(await canvas.evaluate((element) => [(element as HTMLCanvasElement).width, (element as HTMLCanvasElement).height])).toEqual([1200, 900]);
+  await checkTone([96, 144, 192, 255]);
+  await page.getByRole("button", { name: "Recortar", exact: true }).click();
+  await canvas.scrollIntoViewIfNeeded();
+  const rotatedBox = (await canvas.boundingBox())!;
+  await page.mouse.move(rotatedBox.x + rotatedBox.width * 0.03, rotatedBox.y + rotatedBox.height * 0.03);
+  await page.mouse.down();
+  await page.mouse.move(rotatedBox.x + rotatedBox.width * 0.97, rotatedBox.y + rotatedBox.height * 0.97, { steps: 6 });
+  await page.mouse.up();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Aplicar recorte" }).click();
+  await finishTransformedRead([[24, 33], [1104, 33], [24, 813], [1104, 813]]);
+  expect(await canvas.evaluate((element) => (element as HTMLCanvasElement).width)).toBeLessThan(1200);
+  await checkTone([96, 144, 192, 255]);
+  expect(writes).toEqual([]);
 });
 
 test("exam page axe audit and account deletion purge this owner's local partition", async ({ page }) => {

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { normalizeStudent, normalizeStudentDocument } from "@/lib/exam-roster";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OmrAnswer, OmrProfile, OmrResult } from "@/lib/omr/read";
 import { detectRegistrationMarkers, markersFromPoints, type MatrixMarker, type Point } from "@/lib/matrix/detect";
@@ -15,7 +16,7 @@ type Props = {
   numOptions: number;
   profile: OmrProfile | null;
   initialStudents: Student[];
-  onStudentsChange: (students: Student[]) => void;
+  onStudentsChange: (students: Student[] | ((current: Student[]) => Student[])) => void;
   keyValidated: boolean;
   onKeyPending: () => void;
 };
@@ -83,6 +84,18 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   const [importing, setImporting] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDni, setNewDni] = useState("");
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDni, setEditDni] = useState("");
+  const [editError, setEditError] = useState("");
+  const [editingSaving, setEditingSaving] = useState(false);
+  const editorNameRef = useRef<HTMLInputElement | null>(null);
+  const editorTriggerRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (editingSaving) return;
+    if (editingStudent) editorNameRef.current?.focus();
+    else if (editorTriggerRef.current?.isConnected) editorTriggerRef.current.focus();
+  }, [editingStudent, editingSaving]);
   const [queued, setQueued] = useState<QueuedResult[]>([]);
   const [queueNotice, setQueueNotice] = useState("");
   const [comparisons, setComparisons] = useState<Record<string, Student | null | undefined>>({});
@@ -604,13 +617,70 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       });
       const data = await response.json().catch(() => ({})) as { error?: string; student?: { id: string; name: string; dni: string } };
       if (!response.ok || !data.student) { setStudentError(data.error ?? "No se pudo añadir el alumno."); return; }
-      onStudentsChange([...students, { ...data.student!, savedAt: null, answers: null, correct: null, wrong: null, blank: null, rawScore: null, score: null, version: null }].sort((a, b) => a.name.localeCompare(b.name, "es")));
+      onStudentsChange((current) => [...current, { ...data.student!, savedAt: null, answers: null, correct: null, wrong: null, blank: null, rawScore: null, score: null, version: null }].sort((a, b) => a.name.localeCompare(b.name, "es")));
       selectReviewStudent(data.student.id);
       setNewName("");
       setNewDni("");
       setFeedback("Alumno añadido al roster del examen.");
     } catch {
       setStudentError("No se pudo añadir el alumno.");
+    }
+  }
+
+  function openStudentEditor(student: Student, trigger?: HTMLButtonElement) {
+    if (trigger) editorTriggerRef.current = trigger;
+    editorNameRef.current?.focus();
+    setEditingStudent(student);
+    setEditName(student.name);
+    setEditDni(student.dni);
+    setEditError("");
+  }
+
+  function closeStudentEditor() {
+    setEditingStudent(null);
+  }
+
+  async function updateStudent(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingStudent || editingSaving) return;
+    setEditError("");
+    const parsed = normalizeStudent({ name: editName, dni: editDni });
+    if (!parsed.success) { setEditError(parsed.message); return; }
+    setEditingSaving(true);
+    try {
+      const response = await fetch(`/api/exams/${examId}/students/${editingStudent.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...parsed.data, originalName: editingStudent.name, originalDni: editingStudent.dni }),
+      });
+      const data = await response.json().catch(() => ({})) as { error?: string; student?: { id: string; name: string; dni: string } };
+      if (!response.ok || !data.student) { setEditError(data.error ?? "No se pudieron guardar los datos. Recarga la ficha antes de reintentar si cambió en otro dispositivo."); return; }
+      const updated = data.student;
+      onStudentsChange((current) => current.map((student) => student.id === updated.id ? { ...student, name: updated.name, dni: updated.dni } : student).sort((a, b) => a.name.localeCompare(b.name, "es")));
+      closeStudentEditor();
+      setFeedback("Datos del alumno actualizados. Su entrega y la revisión actual se conservan.");
+    } catch {
+      setEditError("No se pudieron guardar los datos. Comprueba la conexión.");
+    } finally {
+      setEditingSaving(false);
+    }
+  }
+
+  async function reloadStudentEditor() {
+    if (!editingStudent || editingSaving) return;
+    setEditingSaving(true);
+    try {
+      const response = await fetch(`/api/exams/${examId}/students`);
+      if (!response.ok) throw new Error();
+      const data = await response.json() as { students: Student[] };
+      const current = data.students.find((student) => student.id === editingStudent.id);
+      if (!current) { setEditError("El alumno ya no existe en este examen."); return; }
+      onStudentsChange((roster) => roster.map((student) => student.id === current.id ? { ...student, name: current.name, dni: current.dni } : student).sort((a, b) => a.name.localeCompare(b.name, "es")));
+      openStudentEditor(current);
+    } catch {
+      setEditError("No se pudo recargar la ficha. Comprueba la conexión.");
+    } finally {
+      setEditingSaving(false);
     }
   }
 
@@ -782,7 +852,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
           setQueueNotice("El servidor confirmó la entrega, pero la copia local no se pudo retirar; elimínala manualmente.");
         }
       }
-      onStudentsChange(students.map((item) => item.id === selectedStudentId ? {
+      onStudentsChange((current) => current.map((item) => item.id === selectedStudentId ? {
         ...item,
         savedAt: data.result?.savedAt ?? new Date().toISOString(),
         answers: review.map((answer) => ({ questionNo: answer.q, optionIndex: answer.selectedOption })),
@@ -822,7 +892,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       if (!response.ok) { setStudentError("No se pudo eliminar la lectura."); return; }
       await purgeQueuedResults(ownerId, { examId, studentId: student.id });
       await refreshQueue();
-      onStudentsChange(students.map((item) => item.id === student.id ? { ...item, savedAt: null, answers: null, correct: null, wrong: null, blank: null, rawScore: null, score: null, version: null } : item));
+      onStudentsChange((current) => current.map((item) => item.id === student.id ? { ...item, savedAt: null, answers: null, correct: null, wrong: null, blank: null, rawScore: null, score: null, version: null } : item));
       if (selectedStudentId === student.id) setSelectedStudentId("");
       setFeedback("Lectura eliminada; el alumno sigue en el roster.");
     } catch {
@@ -838,7 +908,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       if (!response.ok) { setStudentError("No se pudo eliminar el alumno."); return; }
       await purgeQueuedResults(ownerId, { examId, studentId: student.id });
       await refreshQueue();
-      onStudentsChange(students.filter((item) => item.id !== student.id));
+      onStudentsChange((current) => current.filter((item) => item.id !== student.id));
       if (selectedStudentId === student.id) setSelectedStudentId("");
       setFeedback("Alumno eliminado del roster.");
     } catch {
@@ -984,10 +1054,10 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
           {students.map((student) => <option key={student.id} value={student.id}>{student.name} · {student.dni}</option>)}
         </select>
         <div className="omr-table-wrap" role="region" aria-label="Revisión de respuestas, tabla desplazable" tabIndex={0}><table><thead><tr><th>Pregunta</th><th>{review.every((answer) => answer.flag === "guardada") ? "Respuesta guardada" : "Detección provisional"}</th><th>Confianza</th><th>Respuesta final</th><th>Revisión</th></tr></thead><tbody>
-          {review.map((answer, index) => <tr key={answer.q} className={!answer.confirmed ? "omr-pending" : answer.flag === "guardada" || answer.flag === "ok" ? "" : `omr-${answer.flag}`}>
+          {review.map((answer, index) => <tr key={answer.q} className={[!answer.confirmed ? "omr-pending" : "", answer.flag === "guardada" || answer.flag === "ok" ? "" : `omr-${answer.flag}`, answer.confidence !== null && answer.confidence < 0.9 ? "omr-low-confidence" : ""].filter(Boolean).join(" ")}>
             <td>{answer.q}</td>
             <td>{answer.flag === "guardada" ? (answer.detected === null ? "En blanco" : LABELS[answer.detected] ?? answer.detected + 1) : answer.detected === null ? "—" : LABELS[answer.detected] ?? answer.detected + 1} {answer.flag !== "guardada" && answer.flag !== "ok" ? `· ${FLAGS[answer.flag]}` : ""}</td>
-            <td>{answer.confidence === null ? "—" : `${Math.round(answer.confidence * 100)}%`}</td>
+            <td>{answer.confidence === null ? "—" : `${Math.floor(answer.confidence * 1000) / 10}%`}{answer.confidence !== null && answer.confidence < 0.9 ? <span className="omr-confidence-label">Confianza baja</span> : null}</td>
             <td><select aria-label={`Respuesta final pregunta ${answer.q}`} value={answer.selectedOption === null ? "blank" : String(answer.selectedOption)} onChange={(event) => { setReviewHasUnsavedChanges(true); setReview((current) => current?.map((item, itemIndex) => itemIndex === index ? { ...item, selectedOption: event.target.value === "blank" ? null : Number(event.target.value), confirmed: false } : item) ?? null); }}>
               <option value="blank">En blanco</option>
               {Array.from({ length: numOptions }, (_, option) => <option key={option} value={option}>{LABELS[option]}</option>)}
@@ -1005,7 +1075,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
             Confirmar todas las respuestas
           </button>
         </div>
-        <p className="vacio">Confirma cada pregunta o todas a la vez. La detección inicial es provisional; no se calcula nota ni se guarda la imagen.</p>
+        <p className="vacio">Confirma cada pregunta o todas a la vez. La detección inicial es provisional; no se calcula nota ni se guarda la imagen. La confianza es un indicador de detección, no una probabilidad de acierto calibrada. Se señala como baja si es inferior al 90 %; al abrir respuestas guardadas no está disponible.</p>
         {studentError && <p className="error" role="alert">{studentError}</p>}
         {!keyValidated || !selectedStudentId || review.some((answer) => !answer.confirmed) ? <p className="vacio" role="status">
           {!keyValidated
@@ -1021,10 +1091,10 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
 
   <section className="tarjeta">
     <h2>Roster y lecturas</h2>
-    <p className="vacio">Alumnos y respuestas revisadas se guardan solo para este examen. La hoja no se conserva. El DNI se muestra únicamente al propietario del examen.</p>
+    <p className="vacio">Alumnos y respuestas revisadas se guardan solo para este examen. La hoja no se conserva. El DNI/NIE es accesible al propietario y a los administradores autorizados.</p>
     <form onSubmit={createStudent} className="omr-student-form">
       <label htmlFor="student-name">Nombre completo</label><input id="student-name" value={newName} onChange={(event) => setNewName(event.target.value)} maxLength={160} required />
-      <label htmlFor="student-dni">DNI</label><input id="student-dni" value={newDni} onChange={(event) => setNewDni(event.target.value)} maxLength={20} required />
+      <label htmlFor="student-dni">DNI/NIE</label><input id="student-dni" value={newDni} onChange={(event) => setNewDni(event.target.value)} maxLength={20} required />
       <button type="submit">Añadir alumno</button>
     </form>
     <div className="omr-import">
@@ -1033,8 +1103,26 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       {importing && <span role="status">Validando e importando…</span>}
     </div>
     {feedback && <p className="ok" role="status">{feedback}</p>}
-    {students.length === 0 ? <p className="vacio">Todavía no hay alumnos en el roster.</p> : <div className="omr-table-wrap" role="region" aria-label="Alumnos y resultados, tabla desplazable" tabIndex={0}><table><thead><tr><th>Alumno</th><th>DNI</th><th>Estado</th><th>Aciertos</th><th>Fallos</th><th>Blancos</th><th>Bruto</th><th>Nota</th><th>Acciones</th></tr></thead><tbody>
-      {students.map((student) => <tr key={student.id}><td>{student.name}</td><td>{student.dni}</td><td>{student.savedAt ? student.score === null ? "Puntuación pendiente de validar" : `Corregido · ${new Date(student.savedAt).toLocaleString("es-ES")}` : "Pendiente"}</td><td>{student.correct ?? "—"}</td><td>{student.wrong ?? "—"}</td><td>{student.blank ?? "—"}</td><td>{student.rawScore ?? "—"}</td><td>{student.score ?? "—"}</td><td><div className="fila-acciones">{student.savedAt && <><a className="export-link" href={`/api/exams/${examId}/export?type=report&format=pdf&studentId=${student.id}`}>Informe PDF</a><button type="button" className="secundario" onClick={() => editSaved(student)} disabled={!keyValidated}>Abrir / editar</button><button type="button" className="peligro" onClick={() => void deleteResult(student)}>Eliminar entrega</button></>}<button type="button" className="peligro" onClick={() => void deleteStudent(student)}>Eliminar alumno</button></div></td></tr>)}
+    {editingStudent && <form onSubmit={updateStudent} className="omr-student-form" aria-labelledby="edit-student-heading">
+      <h3 id="edit-student-heading">Editar datos de {editingStudent.name}</h3>
+      <label htmlFor="edit-student-name">Nombre completo</label>
+      <input id="edit-student-name" ref={editorNameRef} value={editName} onChange={(event) => setEditName(event.target.value)} maxLength={160} required disabled={editingSaving} aria-describedby={editError ? "edit-student-error" : undefined} />
+      <label htmlFor="edit-student-dni">DNI/NIE</label>
+      <input id="edit-student-dni" value={editDni} onChange={(event) => setEditDni(event.target.value)} maxLength={20} required disabled={editingSaving} aria-describedby={editError ? "edit-student-error" : undefined} />
+      {editError && <><p id="edit-student-error" className="error" role="alert">{editError}</p><button type="button" className="secundario" disabled={editingSaving} onClick={() => void reloadStudentEditor()}>Recargar ficha sin descartar la revisión</button></>}
+      <div className="fila-acciones"><button type="submit" disabled={editingSaving}>{editingSaving ? "Guardando datos…" : "Guardar datos"}</button><button type="button" className="secundario" disabled={editingSaving} onClick={closeStudentEditor}>Cancelar edición de datos</button></div>
+    </form>}
+    {students.length === 0 ? <p className="vacio">Todavía no hay alumnos en el roster.</p> : <div className="omr-table-wrap" role="region" aria-label="Alumnos y resultados, tabla desplazable" tabIndex={0}><table><thead><tr><th>Alumno</th><th>DNI/NIE</th><th>Estado</th><th>Aciertos</th><th>Fallos</th><th>Blancos</th><th>Bruto</th><th>Nota</th><th>Acciones</th></tr></thead><tbody>
+      {students.map((student) => <tr key={student.id}>
+        <td>{student.name}</td><td>{student.dni}{!normalizeStudentDocument(student.dni).success && <span className="error"> Documento antiguo no válido; edita los datos para corregirlo.</span>}</td>
+        <td>{student.savedAt ? student.score === null ? "Puntuación pendiente de validar" : `Corregido · ${new Date(student.savedAt).toLocaleString("es-ES")}` : "Pendiente"}</td>
+        <td>{student.correct ?? "—"}</td><td>{student.wrong ?? "—"}</td><td>{student.blank ?? "—"}</td><td>{student.rawScore ?? "—"}</td><td>{student.score ?? "—"}</td>
+        <td><div className="fila-acciones">
+          <button type="button" className="secundario" onClick={(event) => openStudentEditor(student, event.currentTarget)} disabled={editingSaving}>Editar datos</button>
+          {student.savedAt && <><a className="export-link" href={`/api/exams/${examId}/export?type=report&format=pdf&studentId=${student.id}`}>Informe PDF</a><button type="button" className="secundario" onClick={() => editSaved(student)} disabled={!keyValidated}>Abrir / editar respuestas</button><button type="button" className="peligro" onClick={() => void deleteResult(student)}>Eliminar entrega</button></>}
+          <button type="button" className="peligro" onClick={() => void deleteStudent(student)}>Eliminar alumno</button>
+        </div></td>
+      </tr>)}
     </tbody></table></div>}
     {studentError && !review && <p className="error" role="alert">{studentError}</p>}
   </section>

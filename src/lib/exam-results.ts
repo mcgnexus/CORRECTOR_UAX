@@ -78,6 +78,40 @@ export async function importOwnedStudents(ownerId: string, examId: string, csv: 
   });
 }
 
+export async function updateOwnedStudent(ownerId: string, examId: string, studentId: string, input: unknown) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { status: "invalid" as const, message: "Los datos del alumno no son válidos." };
+  const data = input as Record<string, unknown>;
+  if (Object.keys(data).some((key) => !["name", "dni", "originalName", "originalDni"].includes(key)) ||
+    typeof data.originalName !== "string" || typeof data.originalDni !== "string") {
+    return { status: "invalid" as const, message: "Indica los datos nuevos y originales del alumno, sin campos adicionales." };
+  }
+  const normalized = normalizeStudent({ name: data.name, dni: data.dni });
+  if (!normalized.success) return { status: "invalid" as const, message: normalized.message };
+  try {
+    return await getDb().transaction(async (tx) => {
+      const locked = await tx.execute(sql`select id from exams where id = ${examId} and owner_id = ${ownerId} for update`);
+      if (locked.length === 0) return { status: "not_found" as const };
+      const [student] = await tx.select().from(examStudents)
+        .where(and(eq(examStudents.id, studentId), eq(examStudents.examId, examId))).for("update");
+      if (!student) return { status: "student_not_found" as const };
+      if (student.name !== data.originalName || student.dni !== data.originalDni) return { status: "conflict" as const };
+      const [duplicate] = await tx.select({ id: examStudents.id }).from(examStudents)
+        .where(and(eq(examStudents.examId, examId), eq(examStudents.dni, normalized.data.dni))).limit(1);
+      if (duplicate && duplicate.id !== studentId) return { status: "duplicate" as const };
+      const [updated] = await tx.update(examStudents).set(normalized.data)
+        .where(and(eq(examStudents.id, studentId), eq(examStudents.examId, examId)))
+        .returning({ id: examStudents.id, name: examStudents.name, dni: examStudents.dni });
+      return { status: "updated" as const, student: updated };
+    });
+  } catch (error) {
+    // Drizzle wraps the driver's unique-constraint error in cause.
+    const cause = error instanceof Error && error.cause ? error.cause : error;
+    if (cause && typeof cause === "object" && "code" in cause && cause.code === "23505" &&
+      "constraint_name" in cause && cause.constraint_name === "exam_students_exam_dni_unique") return { status: "duplicate" as const };
+    throw error;
+  }
+}
+
 export async function deleteOwnedStudent(ownerId: string, examId: string, studentId: string, confirmResult: boolean) {
   return getDb().transaction(async (tx) => {
     const locked = await tx.execute(sql`select id from exams where id = ${examId} and owner_id = ${ownerId} for update`);

@@ -202,7 +202,7 @@ export default function ExamDetalleClient({
       </section>
       <section className="tarjeta" aria-labelledby="export-heading">
         <h2 id="export-heading">Exportar</h2>
-        <p className="vacio">Las descargas contienen únicamente datos de este examen. Resultados incluye nombre y DNI; la clave no incluye datos de alumnos.</p>
+        <p className="vacio">Las descargas contienen únicamente datos de este examen. Resultados incluye nombre y DNI/NIE; la clave no incluye datos de alumnos.</p>
         {examStatus !== "key_validated" && <p className="aviso">Las exportaciones de clave en borrador se marcarán como no validadas; su PDF incluirá una advertencia visible.</p>}
         <label htmlFor="export-delimiter">Separador CSV</label>
         <select id="export-delimiter" value={csvDelimiter} onChange={(event) => setCsvDelimiter(event.target.value as "," | ";")}>

@@ -1,20 +1,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MAX_ROSTER_CSV_BYTES, normalizeStudent, parseRosterCsv, validateReviewedAnswers } from "@/lib/exam-roster";
+import { MAX_ROSTER_CSV_BYTES, normalizeStudent, normalizeStudentDocument, parseRosterCsv, validateReviewedAnswers } from "@/lib/exam-roster";
 
-test("normaliza nombre y DNI sin imponer checksum", () => {
-  assert.deepEqual(normalizeStudent({ name: "  Ana   Pérez ", dni: " x 123 " }), {
+test("normaliza nombre y DNI/NIE con checksum", () => {
+  assert.deepEqual(normalizeStudent({ name: "  Ana   Pérez ", dni: " x 1234567 l " }), {
     success: true,
-    data: { name: "Ana Pérez", dni: "X123" },
+    data: { name: "Ana Pérez", dni: "X1234567L" },
   });
 });
 
 test("importa CSV UTF-8 con nombres entrecomillados y detecta DNI repetido sin exponerlo", () => {
-  const parsed = parseRosterCsv('nombre,dni\r\n"Pérez, Ana",X123\r\nLuis,x123\r\n');
+  const parsed = parseRosterCsv('nombre,dni\r\n"Pérez, Ana",X1234567L\r\nLuis,x1234567l\r\n');
   assert.equal(parsed.success, false);
   if (parsed.success) return;
   assert.deepEqual(parsed.problems, [{ row: 3, message: "El DNI está duplicado en el archivo." }]);
-  assert.equal(JSON.stringify(parsed).includes("X123"), false);
+  assert.equal(JSON.stringify(parsed).includes("X1234567L"), false);
+});
+
+test("valida DNI/NIE, conserva ceros y rechaza letras, signos y prefijos incorrectos", () => {
+  for (const dni of ["00000000T", "12345678Z", "X1234567L", "Y1234567X", "Z1234567R"]) {
+    assert.deepEqual(normalizeStudentDocument(dni.toLowerCase()), { success: true, data: dni });
+  }
+  for (const dni of ["00000000A", "12345678A", "A1234567L", "X123456L", "12345678-Z", "12345678;Z", "legacy"]) {
+    assert.equal(normalizeStudentDocument(dni).success, false);
+    assert.equal(normalizeStudent({ name: "Ana", dni }).success, false);
+  }
+});
+
+test("CSV con documento inválido devuelve solo problemas por fila, nunca importación parcial", () => {
+  const parsed = parseRosterCsv("nombre,dni\nAna,12345678Z\nLuis,12345678A");
+  assert.equal(parsed.success, false);
+  if (!parsed.success) assert.deepEqual(parsed.problems.map((problem) => problem.row), [3]);
+  assert.equal("students" in parsed, false);
 });
 
 test("CSV mal formado o con columnas incorrectas no se acepta parcialmente", () => {

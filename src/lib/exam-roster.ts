@@ -5,16 +5,28 @@ export type CsvProblem = { row: number; message: string };
 export const MAX_ROSTER_CSV_BYTES = 2 * 1024 * 1024;
 export const MAX_ROSTER_CSV_ROWS = 1000;
 
+export function normalizeStudentDocument(input: string): { success: true; data: string } | { success: false; message: string } {
+  const dni = input.trim().replace(/\s+/g, "").toUpperCase();
+  if (!/^(?:[0-9]{8}|[XYZ][0-9]{7})[A-Z]$/.test(dni)) {
+    return { success: false, message: "El DNI/NIE debe contener ocho cifras y una letra, o X/Y/Z, siete cifras y una letra, sin signos." };
+  }
+  const number = dni.slice(0, -1).replace(/^[XYZ]/, (prefix) => String("XYZ".indexOf(prefix)));
+  if ("TRWAGMYFPDXBNJZSQVHLCKE"[Number(number) % 23] !== dni.at(-1)) {
+    return { success: false, message: "La letra de control del DNI/NIE no es correcta." };
+  }
+  return { success: true, data: dni };
+}
+
 export function normalizeStudent(input: unknown): { success: true; data: ExamStudentInput } | { success: false; message: string } {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { success: false, message: "Los datos del alumno no son válidos." };
   const value = input as Record<string, unknown>;
   if (Object.keys(value).some((key) => key !== "name" && key !== "dni")) return { success: false, message: "Los datos contienen campos no permitidos." };
-  if (typeof value.name !== "string" || typeof value.dni !== "string") return { success: false, message: "Indica nombre y DNI." };
+  if (typeof value.name !== "string" || typeof value.dni !== "string") return { success: false, message: "Indica nombre y DNI/NIE." };
   const name = value.name.trim().replace(/\s+/g, " ");
-  const dni = value.dni.trim().replace(/\s+/g, "").toUpperCase();
   if (name.length < 2 || name.length > 160) return { success: false, message: "El nombre debe tener entre 2 y 160 caracteres." };
-  if (dni.length < 4 || dni.length > 20 || /[\u0000-\u001f,;]/.test(dni)) return { success: false, message: "El DNI debe tener entre 4 y 20 caracteres." };
-  return { success: true, data: { name, dni } };
+  const document = normalizeStudentDocument(value.dni);
+  if (!document.success) return document;
+  return { success: true, data: { name, dni: document.data } };
 }
 
 function parseCsvRows(csv: string): { rows: Array<{ row: number; cells: string[] }>; error?: CsvProblem } {
