@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { normalizeStudent, normalizeStudentDocument } from "@/lib/exam-roster";
+import { MAX_ROSTER_CSV_BYTES, normalizeStudent, normalizeStudentDocument } from "@/lib/exam-roster";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OmrAnswer, OmrProfile, OmrResult } from "@/lib/omr/read";
 import { detectRegistrationMarkers, markersFromPoints, type MatrixMarker, type Point } from "@/lib/matrix/detect";
@@ -48,6 +48,47 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_SIDE = 2000;
 const LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const FLAGS = { ok: "Leída", blank: "En blanco", multiple: "Varias marcas", faint: "Dudosa" };
+
+const EMPTY_STUDENT_RESULT: Pick<Student, "savedAt" | "answers" | "correct" | "wrong" | "blank" | "rawScore" | "score" | "version"> = {
+  savedAt: null, answers: null, correct: null, wrong: null, blank: null, rawScore: null, score: null, version: null,
+};
+
+function sortStudents(students: Student[]) {
+  return [...students].sort((a, b) => a.name.localeCompare(b.name, "es"));
+}
+
+function setStudentIdentity(students: Student[], id: string, identity: { name: string; dni: string }) {
+  const { name, dni } = identity;
+  return students.map((student) => student.id === id ? { ...student, name, dni } : student);
+}
+
+type PendingSave = { key: string; body: string };
+type SavePayload = { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
+
+function queuedSave(ownerId: string, examId: string, pending: PendingSave, status: QueuedResult["status"], lastError: QueuedResult["lastError"]): QueuedResult {
+  return {
+    id: pending.key,
+    ownerId,
+    examId,
+    ...(JSON.parse(pending.body) as SavePayload),
+    idempotencyKey: pending.key,
+    createdAt: new Date().toISOString(),
+    status,
+    retries: 0,
+    lastError,
+  };
+}
+
+function reviewFromAnswers(answers: Array<{ questionNo: number; optionIndex: number | null }>, flag: ReviewAnswer["flag"], confirmed: boolean): ReviewAnswer[] {
+  return answers.map((answer) => ({
+    q: answer.questionNo,
+    detected: answer.optionIndex,
+    confidence: null,
+    flag,
+    selectedOption: answer.optionIndex,
+    confirmed,
+  }));
+}
 
 export default function OmrReader({ examId, ownerId, numQuestions, numOptions, profile, initialStudents: students, onStudentsChange, keyValidated, onKeyPending }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -209,21 +250,10 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     return () => { window.removeEventListener("online", retry); document.removeEventListener("visibilitychange", retry); };
   }, [ownerId, sendQueued, keyValidated]);
 
-  function clearScan() {
-    reset();
-  }
-
   function startReview(answers: Array<{ questionNo: number; optionIndex: number | null }>, saved: boolean) {
     setResult(null);
     setReviewHasUnsavedChanges(!saved);
-    setReview(answers.map((answer) => ({
-      q: answer.questionNo,
-      detected: answer.optionIndex,
-      confidence: null,
-      flag: saved ? "guardada" : "blank",
-      selectedOption: answer.optionIndex,
-      confirmed: saved,
-    })));
+    setReview(reviewFromAnswers(answers, saved ? "guardada" : "blank", saved));
   }
 
   function selectReviewStudent(studentId: string) {
@@ -617,7 +647,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       });
       const data = await response.json().catch(() => ({})) as { error?: string; student?: { id: string; name: string; dni: string } };
       if (!response.ok || !data.student) { setStudentError(data.error ?? "No se pudo añadir el alumno."); return; }
-      onStudentsChange((current) => [...current, { ...data.student!, savedAt: null, answers: null, correct: null, wrong: null, blank: null, rawScore: null, score: null, version: null }].sort((a, b) => a.name.localeCompare(b.name, "es")));
+      onStudentsChange((current) => sortStudents([...current, { ...data.student!, ...EMPTY_STUDENT_RESULT }]));
       selectReviewStudent(data.student.id);
       setNewName("");
       setNewDni("");
@@ -656,7 +686,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       const data = await response.json().catch(() => ({})) as { error?: string; student?: { id: string; name: string; dni: string } };
       if (!response.ok || !data.student) { setEditError(data.error ?? "No se pudieron guardar los datos. Recarga la ficha antes de reintentar si cambió en otro dispositivo."); return; }
       const updated = data.student;
-      onStudentsChange((current) => current.map((student) => student.id === updated.id ? { ...student, name: updated.name, dni: updated.dni } : student).sort((a, b) => a.name.localeCompare(b.name, "es")));
+      onStudentsChange((current) => sortStudents(setStudentIdentity(current, updated.id, updated)));
       closeStudentEditor();
       setFeedback("Datos del alumno actualizados. Su entrega y la revisión actual se conservan.");
     } catch {
@@ -675,7 +705,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       const data = await response.json() as { students: Student[] };
       const current = data.students.find((student) => student.id === editingStudent.id);
       if (!current) { setEditError("El alumno ya no existe en este examen."); return; }
-      onStudentsChange((roster) => roster.map((student) => student.id === current.id ? { ...student, name: current.name, dni: current.dni } : student).sort((a, b) => a.name.localeCompare(b.name, "es")));
+      onStudentsChange((roster) => sortStudents(setStudentIdentity(roster, current.id, { name: current.name, dni: current.dni })));
       openStudentEditor(current);
     } catch {
       setEditError("No se pudo recargar la ficha. Comprueba la conexión.");
@@ -688,7 +718,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     setStudentError("");
     setFeedback("");
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) { setStudentError("El CSV supera 2 MB."); return; }
+    if (file.size > MAX_ROSTER_CSV_BYTES) { setStudentError("El CSV supera 2 MB."); return; }
     setImporting(true);
     try {
       const csv = await file.text();
@@ -741,18 +771,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     try {
       const replacingQueuedId = queuedReplacementRef.current;
       if (replacingQueuedId) {
-        const payload = JSON.parse(body) as { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
-        await saveQueuedResult({
-          id: pendingSaveRef.current.key,
-          ownerId,
-          examId,
-          ...payload,
-          idempotencyKey: pendingSaveRef.current.key,
-          createdAt: new Date().toISOString(),
-          status: "pending",
-          retries: 0,
-          lastError: null,
-        });
+        await saveQueuedResult(queuedSave(ownerId, examId, pendingSaveRef.current, "pending", null));
         queuedPersistedKeyRef.current = pendingSaveRef.current.key;
         try {
           await deleteQueuedResult(ownerId, replacingQueuedId);
@@ -770,35 +789,13 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       const data = await response.json().catch(() => ({})) as { error?: string; code?: string; result?: Student };
       if (!response.ok) {
         if (response.status === 401 || response.status >= 500 || data.code === "key_not_validated") {
-          const payload = JSON.parse(body) as { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
-          await saveQueuedResult({
-            id: pendingSaveRef.current.key,
-            ownerId,
-            examId,
-            ...payload,
-            idempotencyKey: pendingSaveRef.current.key,
-            createdAt: new Date().toISOString(),
-            status: "pending",
-            retries: 0,
-            lastError: response.status === 401 ? "unauthorized" : response.status >= 500 ? "server" : "key_pending",
-          });
+          await saveQueuedResult(queuedSave(ownerId, examId, pendingSaveRef.current, "pending", response.status === 401 ? "unauthorized" : response.status >= 500 ? "server" : "key_pending"));
           await refreshQueue();
           reset();
           setQueueNotice("Entrega guardada en la cola local. IndexedDB no está cifrada por la aplicación; no cierres sesión en este dispositivo si necesitas sincronizarla.");
         }
         if (response.status === 409 && ["exists", "version_conflict", "idempotency_conflict"].includes(data.code ?? "")) {
-          const payload = JSON.parse(body) as { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
-          await saveQueuedResult({
-            id: pendingSaveRef.current.key,
-            ownerId,
-            examId,
-            ...payload,
-            idempotencyKey: pendingSaveRef.current.key,
-            createdAt: new Date().toISOString(),
-            status: "blocked",
-            retries: 0,
-            lastError: data.code as QueuedResult["lastError"],
-          });
+          await saveQueuedResult(queuedSave(ownerId, examId, pendingSaveRef.current, "blocked", data.code as QueuedResult["lastError"]));
           await refreshQueue();
           setQueueNotice("La entrega se guardó en la cola local como conflicto. Compara las respuestas antes de reemplazar.");
         }
@@ -813,18 +810,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
           return;
         }
         if (response.status < 500 && response.status !== 401 && data.code !== "key_not_validated" && !["exists", "version_conflict", "idempotency_conflict"].includes(data.code ?? "")) {
-          const payload = JSON.parse(body) as { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
-          await saveQueuedResult({
-            id: pendingSaveRef.current.key,
-            ownerId,
-            examId,
-            ...payload,
-            idempotencyKey: pendingSaveRef.current.key,
-            createdAt: new Date().toISOString(),
-            status: "blocked",
-            retries: 0,
-            lastError: "rejected",
-          });
+          await saveQueuedResult(queuedSave(ownerId, examId, pendingSaveRef.current, "blocked", "rejected"));
           await refreshQueue();
         }
         queuedPersistedKeyRef.current = null;
@@ -870,8 +856,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       const pending = pendingSaveRef.current;
       if (pending) {
         try {
-          const payload = JSON.parse(pending.body) as { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
-          await saveQueuedResult({ id: pending.key, ownerId, examId, ...payload, idempotencyKey: pending.key, createdAt: new Date().toISOString(), status: "pending", retries: 0, lastError: "network" });
+          await saveQueuedResult(queuedSave(ownerId, examId, pending, "pending", "network"));
           await refreshQueue();
           reset();
           setQueueNotice("Entrega guardada en la cola local. IndexedDB no está cifrada por la aplicación; no cierres sesión en este dispositivo si necesitas sincronizarla.");
@@ -892,7 +877,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       if (!response.ok) { setStudentError("No se pudo eliminar la lectura."); return; }
       await purgeQueuedResults(ownerId, { examId, studentId: student.id });
       await refreshQueue();
-      onStudentsChange((current) => current.map((item) => item.id === student.id ? { ...item, savedAt: null, answers: null, correct: null, wrong: null, blank: null, rawScore: null, score: null, version: null } : item));
+      onStudentsChange((current) => current.map((item) => item.id === student.id ? { ...item, ...EMPTY_STUDENT_RESULT } : item));
       if (selectedStudentId === student.id) setSelectedStudentId("");
       setFeedback("Lectura eliminada; el alumno sigue en el roster.");
     } catch {
@@ -919,7 +904,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   function editSaved(student: Student) {
     if (!student.answers) return;
     if (reviewHasUnsavedChanges && !window.confirm("La revisión actual no está guardada. ¿Descartarla?")) return;
-    clearScan();
+    reset();
     setSelectedStudentId(student.id);
     startReview(student.answers, true);
     setFeedback(`Revisión guardada de ${student.name}. Confirma cada pregunta si haces cambios.`);
@@ -950,14 +935,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     reset();
     queuedReplacementRef.current = entry.id;
     setSelectedStudentId(student.id);
-    setReview(entry.answers.map((answer) => ({
-      q: answer.questionNo,
-      detected: answer.optionIndex,
-      confidence: null,
-      flag: "guardada",
-      selectedOption: answer.optionIndex,
-      confirmed: false,
-    })));
+    setReview(reviewFromAnswers(entry.answers, "guardada", false));
     setReviewHasUnsavedChanges(true);
     setFeedback("Respuestas pendientes cargadas. Compara con el estado del servidor, confirma cada pregunta y guarda el reemplazo explícitamente.");
     window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
@@ -1084,7 +1062,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
               ? "Selecciona un alumno del roster."
               : "Confirma todas las respuestas o pulsa «Confirmar todas las respuestas»."}
         </p> : null}
-        <div className="fila-acciones"><button type="submit" disabled={saving || review.some((answer) => !answer.confirmed) || !selectedStudentId || !keyValidated}>{saving ? "Guardando y puntuando…" : "Confirmar entrega y nota"}</button><button type="button" className="secundario" onClick={clearScan} disabled={saving}>Cancelar revisión</button></div>
+        <div className="fila-acciones"><button type="submit" disabled={saving || review.some((answer) => !answer.confirmed) || !selectedStudentId || !keyValidated}>{saving ? "Guardando y puntuando…" : "Confirmar entrega y nota"}</button><button type="button" className="secundario" onClick={reset} disabled={saving}>Cancelar revisión</button></div>
       </form>}
       </>}
   </section>
