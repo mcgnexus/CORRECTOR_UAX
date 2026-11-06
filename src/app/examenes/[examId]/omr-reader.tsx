@@ -1114,7 +1114,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     </form>}
     {students.length === 0 ? <p className="vacio">Todavía no hay alumnos en el roster.</p> : <div className="omr-table-wrap" role="region" aria-label="Alumnos y resultados, tabla desplazable" tabIndex={0}><table><thead><tr><th>Alumno</th><th>DNI/NIE</th><th>Estado</th><th>Aciertos</th><th>Fallos</th><th>Blancos</th><th>Bruto</th><th>Nota</th><th>Acciones</th></tr></thead><tbody>
       {students.map((student) => <tr key={student.id}>
-        <td>{student.name}</td><td>{student.dni}{!normalizeStudentDocument(student.dni).success && <span className="error"> Documento antiguo no válido; edita los datos para corregirlo.</span>}</td>
+        <td>{student.name}</td><td>{student.dni}{!normalizeStudentDocument(student.dni).success && <span className="error omr-legacy-document">Documento antiguo no válido; edita los datos para corregirlo.</span>}</td>
         <td>{student.savedAt ? student.score === null ? "Puntuación pendiente de validar" : `Corregido · ${new Date(student.savedAt).toLocaleString("es-ES")}` : "Pendiente"}</td>
         <td>{student.correct ?? "—"}</td><td>{student.wrong ?? "—"}</td><td>{student.blank ?? "—"}</td><td>{student.rawScore ?? "—"}</td><td>{student.score ?? "—"}</td>
         <td><div className="fila-acciones">

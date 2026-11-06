@@ -323,6 +323,17 @@ td {
   font-weight: 700;
 }
 
+.omr-legacy-document {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.omr-table-wrap table {
+  min-width: 720px;
+}
+
 .omr-review,
 .omr-student-form {
   display: grid;
@@ -413,6 +424,10 @@ td {
 
   .omr-table-wrap {
     overflow-x: auto;
+  }
+
+  .omr-table-wrap table {
+    min-width: 760px;
   }
 
   .omr-review table {
