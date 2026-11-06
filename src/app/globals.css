@@ -331,7 +331,12 @@ td {
 }
 
 .omr-table-wrap table {
-  min-width: 720px;
+  min-width: 900px;
+}
+
+.omr-table-wrap th,
+.omr-table-wrap td {
+  white-space: nowrap;
 }
 
 .omr-review,
@@ -390,6 +395,13 @@ td {
   flex-wrap: nowrap;
 }
 
+.omr-table-wrap td .fila-acciones button,
+.omr-table-wrap td .fila-acciones a {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  white-space: nowrap;
+}
+
 @media (max-width: 640px) {
   .contenedor {
     padding: 0.75rem;
@@ -427,7 +439,7 @@ td {
   }
 
   .omr-table-wrap table {
-    min-width: 760px;
+    min-width: 900px;
   }
 
   .omr-review table {
