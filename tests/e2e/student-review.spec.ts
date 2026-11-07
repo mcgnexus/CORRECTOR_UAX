@@ -18,6 +18,7 @@ test.beforeAll(async () => {
       contents: `import React, {useState} from 'react';
         import {createRoot} from 'react-dom/client';
         import OmrReader from './src/app/examenes/[examId]/omr-reader';
+        import ExamenesClient from './src/app/examenes/client';
         import {saveQueuedResult, listQueuedResults} from './src/lib/offline-queue/indexed-db';
         window.testQueue = {saveQueuedResult, listQueuedResults};
         const saved = {id: '${studentId}', name: 'Alumno corregido', dni: 'legacy-invalid',
@@ -25,21 +26,24 @@ test.beforeAll(async () => {
           correct: 1, wrong: 2, blank: 1, rawScore: '1', score: '2.5', version: 7};
         function App() {
           const [students, setStudents] = useState([saved, {...saved, id:'${pendingId}',
-            name:'Alumno pendiente', dni:'00000000T', savedAt:null, answers:null,
+            name:'Alumno pendiente', dni:null, savedAt:null, answers:null,
             correct:null, wrong:null, blank:null, rawScore:null, score:null, version:null}]);
           return <OmrReader examId='${examId}' ownerId='00000000-0000-4000-8000-000000000001'
-            numQuestions={4} numOptions={4} profile={{bubbles:[],bubbleRadius:0.012}}
-            initialStudents={students} onStudentsChange={setStudents} keyValidated={true} onKeyPending={()=>{}}/>;
+            numQuestions={4} numOptions={4} profile={location.search.includes('manual') ? null : {bubbles:[],bubbleRadius:0.012}}
+            initialStudents={students} onStudentsChange={setStudents} keyValidated={!location.search.includes('pending-key')} onKeyPending={()=>{}}/>;
         }
-        createRoot(document.getElementById('root')).render(<App/>);`,
+        createRoot(document.getElementById('root')).render(location.search.includes('demo-list') ? <ExamenesClient examenes={[]} ownerId='00000000-0000-4000-8000-000000000001'/> : <App/>);`,
       resolveDir: process.cwd(), loader: "tsx",
     },
     bundle: true, write: false, platform: "browser", format: "esm", jsx: "automatic",
     alias: { "@": path.resolve("src") },
     plugins: [{ name: "next-link-only", setup(builder) {
-      builder.onResolve({ filter: /^next\/link$/ }, () => ({ path: "link", namespace: "fixture" }));
-      builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({
-        contents: "import React from 'react'; export default function Link(props) { return React.createElement('a', props); }",
+      builder.onResolve({ filter: /^(next\/link|next\/navigation|next-auth\/react)$/ }, (args) => ({ path: args.path, namespace: "fixture" }));
+      builder.onLoad({ filter: /.*/, namespace: "fixture" }, (args) => ({
+        contents: args.path === "next/navigation"
+          ? "export function useRouter(){return {push:(path)=>{window.testNavigation=path},refresh:()=>{}}}"
+          : args.path === "next-auth/react" ? "export async function signOut(){}"
+          : "import React from 'react'; export default function Link(props) { return React.createElement('a', props); }",
         resolveDir: process.cwd(),
       }));
     } }],
@@ -47,7 +51,7 @@ test.beforeAll(async () => {
   script = output.outputFiles[0].text;
 });
 
-async function mount(page: Page) {
+async function mount(page: Page, query = "") {
   await page.addInitScript(() => {
     // Exact boundary values are injected at the worker boundary, not into React state.
     window.Worker = class {
@@ -69,9 +73,123 @@ async function mount(page: Page) {
     if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: `<html lang="es"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Student review fixture</title><style>${styles}</style></head><body><div id="root"></div><script type="module" src="/fixture.js"></script></body></html>` });
     throw new Error(`Peticion inesperada: ${route.request().method()} ${url.pathname}`);
   });
-  await page.goto("https://student-review.test/");
-  await expect(page.getByRole("button", { name: "Editar datos", exact: true })).toHaveCount(2);
+  await page.goto(`https://student-review.test/${query}`);
+  if (query.includes("demo-list")) await expect(page.getByRole("heading", { name: "Nuevo examen" })).toBeVisible();
+  else await expect(page.getByRole("button", { name: "Editar datos", exact: true })).toHaveCount(2);
 }
+
+test("@mobile ejemplo requiere accion explicita, no llama IA y evita doble clic", async ({ page }) => {
+  let requests = 0;
+  let payload: unknown;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await mount(page, "?demo-list");
+  await page.route("**/api/exams/demo", async (route) => {
+    requests++;
+    payload = route.request().postDataJSON();
+    await gate;
+    await route.fulfill({ status: 201, json: { status: "created", examId } });
+  });
+  expect(requests).toBe(0);
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "Cargar ejemplo", exact: true }).click();
+  expect(requests).toBe(0);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Cargar ejemplo", exact: true }).click();
+  await expect.poll(() => requests).toBe(1);
+  await expect(page.getByRole("button", { name: "Cargando ejemplo…", exact: true })).toBeDisabled();
+  expect(payload).toEqual({ confirmation: "CREAR EJEMPLO FICTICIO" });
+  release();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { testNavigation: string }).testNavigation)).toBe(`/examenes/${examId}`);
+  expect(requests).toBe(1);
+});
+
+test("@mobile ejemplo muestra texto ficticio para probar IA y error recuperable", async ({ page }) => {
+  await mount(page, "?demo-list");
+  await page.route("**/api/exams/demo", (route) => route.fulfill({ status: 500, json: { error: "Fallo de prueba" } }));
+  await page.getByText("Texto ficticio para probar la propuesta IA", { exact: true }).click();
+  await expect(page.getByLabel("Texto ficticio del ejemplo")).toContainText("1. ¿Qué orgánulo");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Cargar ejemplo", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText("Fallo de prueba");
+  await expect(page.getByRole("button", { name: "Cargar ejemplo", exact: true })).toBeEnabled();
+});
+
+test("@mobile nueva entrega manual sin foto ni calibracion conserva blancos y contrato de guardado", async ({ page }) => {
+  await mount(page, "?manual");
+  const row = page.getByRole("row").filter({ hasText: "Alumno pendiente" });
+  await expect(row).toContainText("Sin documento");
+  await expect(row.getByText("Documento antiguo no válido; edita los datos para corregirlo.")).toHaveCount(0);
+  await row.getByRole("button", { name: "Introducir respuestas", exact: true }).click();
+  await expect(page.locator("#omr-student")).toHaveValue(pendingId);
+  await expect(page.locator("canvas.omr-preview")).toBeHidden();
+  await expect(page.getByRole("button", { name: "Confirmar entrega y nota" })).toBeDisabled();
+  await page.getByLabel("Respuesta final pregunta 1").selectOption("2");
+  await page.getByRole("button", { name: "Confirmar todas las respuestas" }).click();
+  let payload: unknown;
+  let key: string | undefined;
+  let queueOwner: string | undefined;
+  await page.route(`**/api/exams/${examId}/results`, async (route) => {
+    payload = route.request().postDataJSON();
+    key = route.request().headers()["idempotency-key"];
+    queueOwner = route.request().headers()["x-queue-owner"];
+    await route.fulfill({ json: { result: { version: 1, correct: 1, wrong: 0, blank: 3, score: "2.50" } } });
+  });
+  await page.getByRole("button", { name: "Confirmar entrega y nota" }).click();
+  await expect(page.getByText(/Entrega guardada\. Aciertos 1/)).toBeVisible();
+  expect(payload).toEqual({ studentId: pendingId, replace: false, expectedVersion: null,
+    answers: [2, null, null, null].map((optionIndex, i) => ({ questionNo: i + 1, optionIndex })) });
+  expect(key).toMatch(/^[0-9a-f-]{36}$/);
+  expect(queueOwner).toBe("00000000-0000-4000-8000-000000000001");
+});
+
+test("@mobile clave pendiente bloquea guardado manual sin ocultar revision", async ({ page }) => {
+  await mount(page, "?manual&pending-key");
+  await page.getByRole("row").filter({ hasText: "Alumno pendiente" }).getByRole("button", { name: "Introducir respuestas", exact: true }).click();
+  await page.getByRole("button", { name: "Confirmar todas las respuestas" }).click();
+  await expect(page.getByText("Valida la clave del examen para habilitar el guardado.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Confirmar entrega y nota" })).toBeDisabled();
+});
+
+test("@mobile reintento de cola envia propietario y conserva entrega si cambia sesion", async ({ page }) => {
+  await mount(page, "?manual");
+  await page.evaluate(async ({ examId, pendingId }) => {
+    const queue = (window as unknown as { testQueue: typeof import("../../src/lib/offline-queue/indexed-db") }).testQueue;
+    const key = "00000000-0000-4000-8000-000000000007";
+    await queue.saveQueuedResult({ id: key, idempotencyKey: key, ownerId: "00000000-0000-4000-8000-000000000001",
+      examId, studentId: pendingId, answers: [0, null, null, null].map((optionIndex, i) => ({ questionNo: i + 1, optionIndex })),
+      replace: false, expectedVersion: null, createdAt: new Date().toISOString(), status: "pending", retries: 0, lastError: "unauthorized" });
+  }, { examId, pendingId });
+  let queueOwner: string | undefined;
+  let requests = 0;
+  await page.route(`**/api/exams/${examId}/results`, async (route) => {
+    queueOwner = route.request().headers()["x-queue-owner"];
+    requests++;
+    await route.fulfill({ status: 401, json: { error: "Cuenta distinta" } });
+  });
+  await page.getByRole("button", { name: "Actualizar cola", exact: true }).click();
+  await page.getByRole("button", { name: "Reintentar", exact: true }).click();
+  await expect.poll(() => requests).toBe(1);
+  await expect(page.getByText(/Inicia sesión con la cuenta propietaria/)).toBeVisible();
+  expect(queueOwner).toBe("00000000-0000-4000-8000-000000000001");
+  const entries = await page.evaluate(() => (window as unknown as { testQueue: typeof import("../../src/lib/offline-queue/indexed-db") }).testQueue.listQueuedResults("00000000-0000-4000-8000-000000000001"));
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ studentId: pendingId, status: "pending", lastError: "unauthorized", retries: 1 });
+});
+
+test("@mobile conflicto de version en entrada manual conserva respuestas en cola bloqueada", async ({ page }) => {
+  await mount(page, "?manual");
+  await page.getByRole("row").filter({ hasText: "Alumno pendiente" }).getByRole("button", { name: "Introducir respuestas", exact: true }).click();
+  await page.getByRole("button", { name: "Confirmar todas las respuestas" }).click();
+  await page.route(`**/api/exams/${examId}/results`, (route) => route.fulfill({ status: 409, json: { code: "version_conflict" } }));
+  await page.route(`**/api/exams/${examId}/students`, (route) => route.fulfill({ json: { students: [] } }));
+  await page.getByRole("button", { name: "Confirmar entrega y nota" }).click();
+  await expect(page.getByText("La entrega se modificó en otro dispositivo. Vuelve a abrir la versión actual antes de editarla.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Comparar respuestas" })).toBeVisible();
+  const entries = await page.evaluate(() => (window as unknown as { testQueue: typeof import("../../src/lib/offline-queue/indexed-db") }).testQueue.listQueuedResults("00000000-0000-4000-8000-000000000001"));
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ studentId: pendingId, expectedVersion: null, status: "blocked", lastError: "version_conflict" });
+});
 
 async function scan(page: Page) {
   // Same local synthetic sheet geometry as hardening.spec.ts; no personal image.
@@ -146,7 +264,7 @@ for (const saved of [false, true]) {
     await expect(form.getByRole("button", { name: "Guardar datos", exact: true })).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(form).toHaveCount(0);
-    expect(bodies).toEqual([{ name: "Alumno actualizado", dni: "87654321X", originalName: saved ? "Alumno corregido" : "Alumno pendiente", originalDni: saved ? "legacy-invalid" : "00000000T" }]);
+    expect(bodies).toEqual([{ name: "Alumno actualizado", dni: "87654321X", originalName: saved ? "Alumno corregido" : "Alumno pendiente", originalDni: saved ? "legacy-invalid" : null }]);
     await expect(page.locator("#omr-student")).toHaveValue(id);
     expect(await review.innerHTML()).toBe(before);
     expect(await canvas.evaluate((node) => (node as HTMLCanvasElement).toDataURL())).toBe(pixels);

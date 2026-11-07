@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { deleteQueuedResult, listQueuedResults, purgeOwnerQueue, saveQueuedResult, type QueuedResult } from "@/lib/offline-queue/indexed-db";
 import { applyQueueDecision, classifyQueueResponse } from "@/lib/offline-queue/queue-state";
+import { activeQueueAccount } from "@/lib/offline-queue/account";
 
 export default function OfflineQueueSync({ ownerId }: { ownerId: string }) {
   const [entries, setEntries] = useState<QueuedResult[]>([]);
@@ -17,9 +18,13 @@ export default function OfflineQueueSync({ ownerId }: { ownerId: string }) {
 
   const send = useCallback(async (entry: QueuedResult, manual = false) => {
     if (entry.ownerId !== ownerId || entry.status === "blocked") return;
+    if (!await activeQueueAccount(ownerId)) {
+      setNotice("La cola espera a iniciar sesión con su cuenta original. No se han enviado ni descartado entregas.");
+      return;
+    }
     if (entry.lastError === "key_pending") {
       try {
-        const exam = await fetch(`/api/exams/${entry.examId}`);
+        const exam = await fetch(`/api/exams/${entry.examId}`, { headers: { "X-Queue-Owner": ownerId }, cache: "no-store" });
         if (exam.status >= 500) return;
         if (exam.status === 401) {
           await saveQueuedResult({ ...entry, retries: entry.retries + 1, lastError: "unauthorized" });
@@ -44,7 +49,7 @@ export default function OfflineQueueSync({ ownerId }: { ownerId: string }) {
     try {
       const response = await fetch(`/api/exams/${entry.examId}/results`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Idempotency-Key": entry.idempotencyKey },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": entry.idempotencyKey, "X-Queue-Owner": ownerId },
         body: JSON.stringify({ studentId: entry.studentId, answers: entry.answers, replace: entry.replace, expectedVersion: entry.expectedVersion }),
       });
       const responseBody = await response.json().catch(() => ({})) as { code?: string };

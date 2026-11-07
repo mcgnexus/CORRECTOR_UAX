@@ -111,7 +111,7 @@ export function buildResultsPdf(bundle: ExportBundle) {
       document.addPage();
       examHeading(document, "Ficha de alumno", bundle.exam);
       document.font("Helvetica-Bold").fontSize(15).fillColor("#17384f").text(row.student.name);
-      document.font("Helvetica").fontSize(10).fillColor("#333333").text(`DNI: ${row.student.dni}`);
+      document.font("Helvetica").fontSize(10).fillColor("#333333").text(`DNI: ${row.student.dni ?? "No indicado"}`);
       document.moveDown(0.3).font("Helvetica-Bold").fontSize(11).text(row.state);
       document.moveDown(0.65);
       const metrics = [
@@ -150,7 +150,7 @@ export function buildResultsPdf(bundle: ExportBundle) {
         if (y + height > document.page.height - 70) {
           document.addPage();
           document.font("Helvetica-Bold").fontSize(11).fillColor("#17384f").text("Respuestas · continuación", 44, 44);
-          document.font("Helvetica").fontSize(9).text(row.student.name + " · DNI: " + row.student.dni, { width: document.page.width - 88 });
+          document.font("Helvetica").fontSize(9).text(row.student.name + " · DNI: " + (row.student.dni ?? "No indicado"), { width: document.page.width - 88 });
           y = document.y + 8;
         }
         document.font("Helvetica").fontSize(9);
@@ -180,7 +180,7 @@ function renderReportStudent(document: PdfDocument, bundle: ExportBundle, row: R
   document.addPage();
   examHeading(document, "Informe de corrección", bundle.exam);
   document.font("Helvetica-Bold").fontSize(16).fillColor("#17384f").text(row.student.name);
-  document.font("Helvetica").fontSize(10).fillColor("#333333").text("DNI: " + row.student.dni + " · " + row.state);
+  document.font("Helvetica").fontSize(10).fillColor("#333333").text("DNI: " + (row.student.dni ?? "No indicado") + " · " + row.state);
   document.moveDown(0.4);
   if (row.breakdown) {
     const summary = [
@@ -211,7 +211,7 @@ function renderReportStudent(document: PdfDocument, bundle: ExportBundle, row: R
     if (y + lineHeight > document.page.height - 120) {
       document.addPage();
       document.font("Helvetica-Bold").fontSize(12).fillColor("#17384f").text("Informe de corrección · continuación");
-      document.font("Helvetica").fontSize(9).fillColor("#555555").text(row.student.name + " · DNI: " + row.student.dni);
+      document.font("Helvetica").fontSize(9).fillColor("#555555").text(row.student.name + " · DNI: " + (row.student.dni ?? "No indicado"));
       const continuationTop = document.y + 6;
       columns = reportTableHeader(document, continuationTop);
       y = continuationTop + 22;

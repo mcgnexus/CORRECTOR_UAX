@@ -5,8 +5,39 @@ import { getDb } from "@/db";
 import { users } from "@/db/schema";
 import { checkAuthRateLimit, clearAuthRateLimit, requestIp } from "@/lib/rate-limit";
 import { readJsonLimited } from "@/lib/http";
+import { getAccountProfile, updateAccountProfile } from "@/lib/users";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const privateHeaders = { "Cache-Control": "no-store" };
+
+export async function GET() {
+  const session = await auth();
+  if (!session?.user?.id) return Response.json({ error: "No autorizado." }, { status: 401, headers: privateHeaders });
+  const profile = await getAccountProfile(session.user.id, session.user.sessionVersion);
+  if (!profile) return Response.json({ error: "No autorizado." }, { status: 401, headers: privateHeaders });
+  return Response.json(profile, { headers: privateHeaders });
+}
+
+export async function PATCH(request: Request) {
+  const session = await auth();
+  if (!session?.user?.id) return Response.json({ error: "No autorizado." }, { status: 401, headers: privateHeaders });
+  const parsed = await readJsonLimited(request, 4096);
+  if (parsed.status !== "ok") return Response.json({ error: "Datos de perfil invalidos." }, { status: parsed.status === "too_large" ? 413 : 400, headers: privateHeaders });
+  const result = await updateAccountProfile(session.user.id, session.user.sessionVersion, parsed.value, requestIp(request.headers));
+  if (result.status === "updated") return Response.json({ profile: result.profile, reauthenticate: result.reauthenticate }, { headers: privateHeaders });
+  const errors = {
+    invalid: [400, "Revisa los campos y la confirmacion de contrasena."],
+    unauthorized: [401, "La sesion ha caducado. Inicia sesion de nuevo."],
+    forbidden: [403, "No se pudo verificar la contrasena actual."],
+    rate_limited: [429, "Demasiados intentos. Espera antes de volver a intentarlo."],
+    conflict: [409, "La cuenta ha cambiado. Inicia sesion de nuevo antes de reintentar."],
+    duplicate: [409, "Ese correo ya esta en uso."],
+  } as const;
+  const [status, error] = errors[result.status];
+  return Response.json({ error, code: result.status }, { status, headers: privateHeaders });
+}
 
 export async function DELETE(request: Request) {
   const session = await auth();

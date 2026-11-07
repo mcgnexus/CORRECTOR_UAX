@@ -1,4 +1,4 @@
-export type ExamStudentInput = { name: string; dni: string };
+export type ExamStudentInput = { name: string; dni: string | null };
 export type ReviewedAnswer = { questionNo: number; optionIndex: number | null };
 export type CsvProblem = { row: number; message: string };
 
@@ -21,10 +21,11 @@ export function normalizeStudent(input: unknown): { success: true; data: ExamStu
   if (!input || typeof input !== "object" || Array.isArray(input)) return { success: false, message: "Los datos del alumno no son válidos." };
   const value = input as Record<string, unknown>;
   if (Object.keys(value).some((key) => key !== "name" && key !== "dni")) return { success: false, message: "Los datos contienen campos no permitidos." };
-  if (typeof value.name !== "string" || typeof value.dni !== "string") return { success: false, message: "Indica nombre y DNI/NIE." };
+  if (typeof value.name !== "string" || (value.dni != null && typeof value.dni !== "string")) return { success: false, message: "Indica un nombre y, si lo deseas, un DNI/NIE válido." };
   const name = value.name.trim().replace(/\s+/g, " ");
   if (name.length < 2 || name.length > 160) return { success: false, message: "El nombre debe tener entre 2 y 160 caracteres." };
-  const document = normalizeStudentDocument(value.dni);
+  if (value.dni == null || (value.dni as string).trim() === "") return { success: true, data: { name, dni: null } };
+  const document = normalizeStudentDocument(value.dni as string);
   if (!document.success) return document;
   return { success: true, data: { name, dni: document.data } };
 }
@@ -110,11 +111,11 @@ export function parseRosterCsv(csv: unknown): { success: true; students: ExamStu
       problems.push({ row: record.row, message: normalized.message });
       continue;
     }
-    if (seen.has(normalized.data.dni)) {
+    if (normalized.data.dni && seen.has(normalized.data.dni)) {
       problems.push({ row: record.row, message: "El DNI está duplicado en el archivo." });
       continue;
     }
-    seen.add(normalized.data.dni);
+    if (normalized.data.dni) seen.add(normalized.data.dni);
     students.push(normalized.data);
     studentRows.push(record.row);
   }

@@ -3,6 +3,7 @@ import { auth, signOut } from "@/auth";
 import { listAccessibleExams } from "@/lib/exams";
 import ExamenesClient from "./client";
 import OfflineQueueSync from "./offline-queue-sync";
+import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,7 @@ export default async function ExamenesPage() {
       <header className="cabecera-app">
         <h1>Correctora UAX</h1>
         <p className="usuario">{session.user.name ?? session.user.email}{session.user.role === "admin" ? " · Administrador" : ""}</p>
+        <nav className="fila-acciones" aria-label="Navegación principal"><Link href="/examenes" aria-current="page">Exámenes</Link><Link href="/alumnos">Alumnos</Link><Link href="/cuenta">Mi cuenta</Link></nav>
         <form action={salir}>
           <button
             type="submit"

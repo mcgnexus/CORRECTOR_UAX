@@ -641,7 +641,7 @@ test("@mobile retoque local conserva revisión, recorte táctil y orientación",
   expect(writes).toEqual([]);
 });
 
-test("exam page axe audit and account deletion purge this owner's local partition", async ({ page }) => {
+test("exam page axe audit and account deletion purge locally and revoke remote sessions", async ({ page }) => {
   await signIn(page);
   await page.goto(`/examenes/${examId}`);
   await assertNoAxeViolations(page);
@@ -672,12 +672,14 @@ test("exam page axe audit and account deletion purge this owner's local partitio
     await expect(page.getByRole("heading", { name: "Iniciar sesión" })).toBeVisible();
     await expect(page).toHaveURL("http://localhost:3100/login");
     const staleSessionResponse = await page.request.get(`/api/exams/${examId}`, { headers: { Cookie: staleCookieHeader } });
-    expect(staleSessionResponse.status()).toBe(404);
-    expect(await staleSessionResponse.json()).toMatchObject({ error: "Examen no encontrado." });
+    expect(staleSessionResponse.status()).toBe(401);
+    expect(await staleSessionResponse.json()).toMatchObject({ error: "No autenticado." });
     await remotePage.goto("http://localhost:3100/examenes");
-    await expect(remotePage.getByText("Se descartó una entrega local porque el examen o alumno ya no existe.")).toBeVisible();
+    await expect(remotePage).toHaveURL("http://localhost:3100/login");
     const remoteQueueAfterRemoval = await readQueueRows(remotePage);
-    expect(remoteQueueAfterRemoval).toEqual([]);
+    // Revocation is indistinguishable from a password change in an offline tab.
+    // Never discard that tab's answers on 401; its local data needs explicit purge.
+    expect(remoteQueueAfterRemoval).toEqual([expect.objectContaining({ ownerId, studentId: pendingStudentId })]);
   } finally {
     await remoteContext.close();
   }

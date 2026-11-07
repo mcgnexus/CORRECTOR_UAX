@@ -35,7 +35,7 @@ type MatrixProfile = {
 type Student = {
   id: string;
   name: string;
-  dni: string;
+  dni: string | null;
   savedAt: string | null;
   answers: Array<{ questionNo: number; optionIndex: number | null }> | null;
   correct: number | null;
@@ -245,6 +245,7 @@ export default function ExamDetalleClient({
         initialProfile={matrixProfile}
         onProfileChange={setMatrixProfile}
       />
+      <p><Link href="/alumnos">Abrir mi base de alumnos e importar Excel</Link>. Desde allí puedes asignar alumnos a este examen sin repetir la importación.</p>
       <OmrReader
         ownerId={ownerId}
         examId={examen.id}

@@ -3,6 +3,7 @@ import { resolveExamAccess } from "@/lib/access";
 import { deleteOwnedExam, findOwnedExam, updateOwnedExam } from "@/lib/exams";
 import { examUpdateSchema } from "@/lib/validation";
 import { z } from "zod";
+import { matchesQueueAccount } from "@/lib/offline-queue/account";
 
 type RouteContext = { params: Promise<{ examId: string }> };
 const idSchema = z.string().uuid();
@@ -12,9 +13,10 @@ async function ownedId(context: RouteContext) {
   return idSchema.safeParse(examId);
 }
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(request: Request, context: RouteContext) {
   const session = await auth();
   if (!session?.user?.id) return Response.json({ error: "No autenticado." }, { status: 401 });
+  if (!matchesQueueAccount(request.headers, session.user.id)) return Response.json({ error: "Inicia sesión con la cuenta original de la entrega.", code: "account_changed" }, { status: 401 });
   const id = await ownedId(context);
   if (!id.success) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
   const access = await resolveExamAccess(session.user.id, id.data);

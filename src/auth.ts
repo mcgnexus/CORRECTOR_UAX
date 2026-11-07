@@ -6,6 +6,9 @@ import { getDb } from "@/db";
 import { users } from "@/db/schema";
 import { clearAuthRateLimit, checkAuthRateLimit, requestIp } from "@/lib/rate-limit";
 import { credentialsSchema } from "@/lib/validation";
+import { displayAccountName } from "@/lib/account-profile";
+import { accountAuthCallbacks } from "@/lib/account-session";
+import { findSessionAccount } from "@/lib/users";
 
 const ARGON2_OPTIONS = { memoryCost: 19_456, timeCost: 2, parallelism: 1 } as const;
 
@@ -38,7 +41,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!(await checkAuthRateLimit(parsed.data.email, ip))) return null;
 
         const [user] = await getDb()
-          .select({ id: users.id, name: users.name, email: users.email, passwordHash: users.passwordHash, role: users.role })
+          .select({ id: users.id, name: users.name, lastName: users.lastName, email: users.email, passwordHash: users.passwordHash, role: users.role, sessionVersion: users.sessionVersion })
           .from(users)
           .where(eq(users.email, parsed.data.email))
           .limit(1);
@@ -58,24 +61,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!passwordMatches) return null;
 
         await clearAuthRateLimit(parsed.data.email, ip);
-        return { id: user.id, name: user.name, email: user.email, role: user.role === "admin" ? "admin" : "teacher" };
+        return { id: user.id, name: displayAccountName(user.name, user.lastName), email: user.email, role: user.role === "admin" ? "admin" : "teacher", sessionVersion: user.sessionVersion };
       },
     }),
   ],
-  callbacks: {
-    jwt({ token, user }) {
-      if (user) {
-        token.sub = user.id;
-        token.role = user.role;
-      }
-      return token;
-    },
-    session({ session, token }) {
-      if (session.user && token.sub) {
-        session.user.id = token.sub;
-        session.user.role = token.role === "admin" ? "admin" : "teacher";
-      }
-      return session;
-    },
-  },
+  callbacks: accountAuthCallbacks(findSessionAccount),
 });

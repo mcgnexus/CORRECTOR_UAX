@@ -1,11 +1,12 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { answerKeyItems, examResultAnswers, examResults, exams, examStudents, idempotencyKeys } from "@/db/schema";
+import { answerKeyItems, examResultAnswers, examResults, exams, examStudents, idempotencyKeys, students as directoryStudents } from "@/db/schema";
 import { answerKeyProblems } from "@/lib/answer-key";
 import { getScoringRuleInTransaction } from "@/lib/exam-scoring";
 import { hashReviewedRequest } from "@/lib/idempotency";
 import { normalizeStudent, parseRosterCsv, validateReviewedAnswers } from "@/lib/exam-roster";
 import { calculateScore } from "@/lib/scoring";
+import { lockDirectory } from "@/lib/students";
 
 export async function listOwnedExamRoster(ownerId: string, examId: string) {
   const db = getDb();
@@ -50,11 +51,20 @@ export async function createOwnedStudent(ownerId: string, examId: string, input:
   const normalized = normalizeStudent(input);
   if (!normalized.success) return { status: "invalid" as const, message: normalized.message };
   return getDb().transaction(async (tx) => {
+    if (!await lockDirectory(tx, ownerId)) return { status: "not_found" as const };
     const locked = await tx.execute(sql`select id from exams where id = ${examId} and owner_id = ${ownerId} for update`);
     if (locked.length === 0) return { status: "not_found" as const };
+    if (normalized.data.dni) {
+      const [existing] = await tx.select({ id: examStudents.id }).from(examStudents).where(and(eq(examStudents.examId, examId), eq(examStudents.dni, normalized.data.dni)));
+      if (existing) return { status: "duplicate" as const };
+    }
+    let directory = normalized.data.dni ? (await tx.select().from(directoryStudents).where(and(eq(directoryStudents.ownerId, ownerId), eq(directoryStudents.dni, normalized.data.dni))))[0] : undefined;
+    directory ??= (await tx.insert(directoryStudents).values({ ownerId, ...normalized.data }).returning())[0];
+    const [linked] = await tx.select({ id: examStudents.id }).from(examStudents).where(and(eq(examStudents.examId, examId), eq(examStudents.studentId, directory.id)));
+    if (linked) return { status: "duplicate" as const };
     const [student] = await tx
       .insert(examStudents)
-      .values({ examId, ...normalized.data })
+      .values({ examId, studentId: directory.id, ...normalized.data })
       .onConflictDoNothing({ target: [examStudents.examId, examStudents.dni] })
       .returning({ id: examStudents.id, name: examStudents.name, dni: examStudents.dni });
     return student ? { status: "created" as const, student } : { status: "duplicate" as const };
@@ -65,15 +75,25 @@ export async function importOwnedStudents(ownerId: string, examId: string, csv: 
   const parsed = parseRosterCsv(csv);
   if (!parsed.success) return { status: "invalid" as const, problems: parsed.problems };
   return getDb().transaction(async (tx) => {
+    if (!await lockDirectory(tx, ownerId)) return { status: "not_found" as const };
     const locked = await tx.execute(sql`select id from exams where id = ${examId} and owner_id = ${ownerId} for update`);
     if (locked.length === 0) return { status: "not_found" as const };
     const current = await tx.select({ dni: examStudents.dni }).from(examStudents).where(eq(examStudents.examId, examId));
     const existing = new Set(current.map((student) => student.dni));
     const conflicts = parsed.students.flatMap((student, index) =>
-      existing.has(student.dni) ? [{ row: parsed.rows[index], message: "El DNI ya existe en el roster de este examen." }] : [],
+      student.dni && existing.has(student.dni) ? [{ row: parsed.rows[index], message: "El DNI ya existe en el roster de este examen." }] : [],
     );
     if (conflicts.length) return { status: "invalid" as const, problems: conflicts };
-    await tx.insert(examStudents).values(parsed.students.map((student) => ({ examId, ...student })));
+    const linked = await tx.select({ studentId: examStudents.studentId, dni: directoryStudents.dni }).from(examStudents)
+      .innerJoin(directoryStudents, eq(examStudents.studentId, directoryStudents.id)).where(eq(examStudents.examId, examId));
+    const linkConflicts = parsed.students.flatMap((student, index) => student.dni && linked.some((s) => s.dni === student.dni)
+      ? [{ row: parsed.rows[index], message: "Esta ficha ya está inscrita en el examen con sus datos históricos." }] : []);
+    if (linkConflicts.length) return { status: "invalid" as const, problems: linkConflicts };
+    for (const student of parsed.students) {
+      let directory = student.dni ? (await tx.select().from(directoryStudents).where(and(eq(directoryStudents.ownerId, ownerId), eq(directoryStudents.dni, student.dni))))[0] : undefined;
+      directory ??= (await tx.insert(directoryStudents).values({ ownerId, ...student }).returning())[0];
+      await tx.insert(examStudents).values({ examId, studentId: directory.id, ...student });
+    }
     return { status: "imported" as const, count: parsed.students.length };
   });
 }
@@ -82,7 +102,7 @@ export async function updateOwnedStudent(ownerId: string, examId: string, studen
   if (!input || typeof input !== "object" || Array.isArray(input)) return { status: "invalid" as const, message: "Los datos del alumno no son válidos." };
   const data = input as Record<string, unknown>;
   if (Object.keys(data).some((key) => !["name", "dni", "originalName", "originalDni"].includes(key)) ||
-    typeof data.originalName !== "string" || typeof data.originalDni !== "string") {
+    typeof data.originalName !== "string" || (data.originalDni !== null && typeof data.originalDni !== "string")) {
     return { status: "invalid" as const, message: "Indica los datos nuevos y originales del alumno, sin campos adicionales." };
   }
   const normalized = normalizeStudent({ name: data.name, dni: data.dni });
@@ -95,8 +115,8 @@ export async function updateOwnedStudent(ownerId: string, examId: string, studen
         .where(and(eq(examStudents.id, studentId), eq(examStudents.examId, examId))).for("update");
       if (!student) return { status: "student_not_found" as const };
       if (student.name !== data.originalName || student.dni !== data.originalDni) return { status: "conflict" as const };
-      const [duplicate] = await tx.select({ id: examStudents.id }).from(examStudents)
-        .where(and(eq(examStudents.examId, examId), eq(examStudents.dni, normalized.data.dni))).limit(1);
+      const duplicate = normalized.data.dni ? (await tx.select({ id: examStudents.id }).from(examStudents)
+        .where(and(eq(examStudents.examId, examId), eq(examStudents.dni, normalized.data.dni))).limit(1))[0] : undefined;
       if (duplicate && duplicate.id !== studentId) return { status: "duplicate" as const };
       const [updated] = await tx.update(examStudents).set(normalized.data)
         .where(and(eq(examStudents.id, studentId), eq(examStudents.examId, examId)))

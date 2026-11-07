@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { signOut } from "next-auth/react";
 import { purgeOwnerQueue, purgeQueuedResults } from "@/lib/offline-queue/indexed-db";
 import PasswordInput from "../password-input";
+import { examDemo } from "@/lib/exam-demo-content";
 
 type Exam = {
   id: string;
@@ -29,6 +30,33 @@ export default function ExamenesClient({ examenes, ownerId }: { examenes: Exam[]
   const [accountError, setAccountError] = useState("");
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [accountDeleted, setAccountDeleted] = useState(false);
+  const [loadingDemo, setLoadingDemo] = useState(false);
+  const [demoError, setDemoError] = useState("");
+  const demoPendingRef = useRef(false);
+
+  async function loadDemo() {
+    if (demoPendingRef.current) return;
+    if (!window.confirm("Se creará un ejemplo ficticio privado con tres fichas de alumnos, inscripciones y respuestas de prueba. No se enviará nada a IA. Si ya tienes un ejemplo, se abrirá sin duplicarlo. ¿Continuar?")) return;
+    demoPendingRef.current = true;
+    setLoadingDemo(true);
+    setDemoError("");
+    try {
+      const response = await fetch("/api/exams/demo", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation: "CREAR EJEMPLO FICTICIO" }) });
+      const body = await response.json().catch(() => ({})) as { examId?: string; error?: string };
+      if (!response.ok || !body.examId) {
+        setDemoError(body.error ?? "No se pudo cargar el ejemplo. Reintentar no creará otra copia.");
+        return;
+      }
+      router.push(`/examenes/${body.examId}`);
+      router.refresh();
+    } catch {
+      setDemoError("No se pudo conectar. Reintentar abrirá el mismo ejemplo si ya se creó.");
+    } finally {
+      demoPendingRef.current = false;
+      setLoadingDemo(false);
+    }
+  }
 
   async function finishAccountRemoval() {
     try {
@@ -116,6 +144,19 @@ export default function ExamenesClient({ examenes, ownerId }: { examenes: Exam[]
           </div>
         </form>
       </div>
+
+      <section className="tarjeta" aria-labelledby="demo-heading">
+        <h2 id="demo-heading">Ejemplo ficticio privado</h2>
+        <p>Prueba un examen de cuatro preguntas con tres alumnos ficticios, una clave manual revisable y dos entregas pendientes de puntuar. Revisa y valida la clave para calcular sus notas; después puedes introducir las respuestas del alumno pendiente sin fotografía.</p>
+        <p>Solo se mantiene un ejemplo por cuenta. Puedes eliminar el examen y las fichas de prueba con las acciones habituales. Cargarlo nunca llama a IA ni presenta la clave manual como generada por IA.</p>
+        <button type="button" className="secundario" disabled={loadingDemo} onClick={() => void loadDemo()}>{loadingDemo ? "Cargando ejemplo…" : "Cargar ejemplo"}</button>
+        {demoError && <p className="error" role="alert">{demoError}</p>}
+        <details>
+          <summary>Texto ficticio para probar la propuesta IA</summary>
+          <p>Este texto no contiene datos reales. Para probar IA, introdúcelo en la opción de propuesta IA del examen y otorga allí el consentimiento de envío. Revisa la propuesta y valida la clave por separado. No se envía al abrir este panel.</p>
+          <pre aria-label="Texto ficticio del ejemplo" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{examDemo.aiText}</pre>
+        </details>
+      </section>
 
       <div className="tarjeta">
         <h2>Mis exámenes</h2>

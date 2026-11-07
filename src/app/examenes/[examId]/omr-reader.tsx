@@ -24,7 +24,7 @@ type Props = {
 type Student = {
   id: string;
   name: string;
-  dni: string;
+  dni: string | null;
   savedAt: string | null;
   answers: Array<{ questionNo: number; optionIndex: number | null }> | null;
   correct: number | null;
@@ -57,7 +57,7 @@ function sortStudents(students: Student[]) {
   return [...students].sort((a, b) => a.name.localeCompare(b.name, "es"));
 }
 
-function setStudentIdentity(students: Student[], id: string, identity: { name: string; dni: string }) {
+function setStudentIdentity(students: Student[], id: string, identity: { name: string; dni: string | null }) {
   const { name, dni } = identity;
   return students.map((student) => student.id === id ? { ...student, name, dni } : student);
 }
@@ -216,7 +216,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     try {
       const response = await fetch(`/api/exams/${entry.examId}/results`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Idempotency-Key": entry.idempotencyKey },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": entry.idempotencyKey, "X-Queue-Owner": ownerId },
         body: JSON.stringify({ studentId: entry.studentId, answers: entry.answers, replace: entry.replace, expectedVersion: entry.expectedVersion }),
       });
       const responseBody = await response.json().catch(() => ({})) as { code?: string };
@@ -645,7 +645,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: newName, dni: newDni }),
       });
-      const data = await response.json().catch(() => ({})) as { error?: string; student?: { id: string; name: string; dni: string } };
+      const data = await response.json().catch(() => ({})) as { error?: string; student?: { id: string; name: string; dni: string | null } };
       if (!response.ok || !data.student) { setStudentError(data.error ?? "No se pudo añadir el alumno."); return; }
       onStudentsChange((current) => sortStudents([...current, { ...data.student!, ...EMPTY_STUDENT_RESULT }]));
       selectReviewStudent(data.student.id);
@@ -662,7 +662,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     editorNameRef.current?.focus();
     setEditingStudent(student);
     setEditName(student.name);
-    setEditDni(student.dni);
+    setEditDni(student.dni ?? "");
     setEditError("");
   }
 
@@ -683,7 +683,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...parsed.data, originalName: editingStudent.name, originalDni: editingStudent.dni }),
       });
-      const data = await response.json().catch(() => ({})) as { error?: string; student?: { id: string; name: string; dni: string } };
+      const data = await response.json().catch(() => ({})) as { error?: string; student?: { id: string; name: string; dni: string | null } };
       if (!response.ok || !data.student) { setEditError(data.error ?? "No se pudieron guardar los datos. Recarga la ficha antes de reintentar si cambió en otro dispositivo."); return; }
       const updated = data.student;
       onStudentsChange((current) => sortStudents(setStudentIdentity(current, updated.id, updated)));
@@ -783,7 +783,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       }
       const response = await fetch(`/api/exams/${examId}/results`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Idempotency-Key": pendingSaveRef.current.key },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": pendingSaveRef.current.key, "X-Queue-Owner": ownerId },
         body,
       });
       const data = await response.json().catch(() => ({})) as { error?: string; code?: string; result?: Student };
@@ -910,6 +910,15 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     setFeedback(`Revisión guardada de ${student.name}. Confirma cada pregunta si haces cambios.`);
   }
 
+  function enterManualAnswers(student: Student) {
+    if (busy || saving) return;
+    if (reviewHasUnsavedChanges && !window.confirm("La revisión actual no está guardada. ¿Descartarla?")) return;
+    reset();
+    setSelectedStudentId(student.id);
+    startReview(Array.from({ length: numQuestions }, (_, index) => ({ questionNo: index + 1, optionIndex: null })), false);
+    setFeedback(`Entrada manual de ${student.name}. Elige cada respuesta o déjala explícitamente en blanco y confirma antes de guardar. No se necesita fotografía ni calibración.`);
+  }
+
   async function loadQueuedComparison(entry: QueuedResult) {
     setComparisons((current) => ({ ...current, [entry.id]: undefined }));
     try {
@@ -970,7 +979,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   return <>
   <section className="tarjeta">
     <h2>Introducir examen del alumno</h2>
-    <p className="vacio">Haz una fotografía o elige un archivo, revisa las respuestas y guarda la entrega del alumno. La detección provisional se procesa en este dispositivo. Solo al guardar, se envían el alumno elegido y las respuestas revisadas; la foto nunca se sube ni se conserva.</p>
+    <p className="vacio">Usa «Introducir respuestas» en el roster para crear una entrega manual sin fotografía ni calibración. También puedes fotografiar una hoja calibrada. Solo al guardar se envían el alumno y las respuestas revisadas; la foto nunca se sube ni se conserva.</p>
     {disabledReason ? <p className="vacio">{disabledReason} {!profile && <Link href={`/examenes/${examId}#calibracion`}>Ir a calibración</Link>}</p> : <>
       <div className="fila-acciones">
         <label className="boton" htmlFor="omr-camera" aria-disabled={busy || saving}>Abrir cámara</label>
@@ -1025,11 +1034,12 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       {result && <>
         <p className="ok" role="status">Lectura provisional terminada: {result.answers.length} preguntas. Revisa y confirma todas antes de guardar.</p>
       </>}
+      </>}
       {review && <form onSubmit={saveReview} className="omr-review">
         <label htmlFor="omr-student">Alumno del roster</label>
         <select id="omr-student" value={selectedStudentId} onChange={(event) => selectReviewStudent(event.target.value)} required>
           <option value="">Selecciona un alumno</option>
-          {students.map((student) => <option key={student.id} value={student.id}>{student.name} · {student.dni}</option>)}
+          {students.map((student) => <option key={student.id} value={student.id}>{student.name} · {student.dni ?? "Sin documento"}</option>)}
         </select>
         <div className="omr-table-wrap" role="region" aria-label="Revisión de respuestas, tabla desplazable" tabIndex={0}><table><thead><tr><th>Pregunta</th><th>{review.every((answer) => answer.flag === "guardada") ? "Respuesta guardada" : "Detección provisional"}</th><th>Confianza</th><th>Respuesta final</th><th>Revisión</th></tr></thead><tbody>
           {review.map((answer, index) => <tr key={answer.q} className={[!answer.confirmed ? "omr-pending" : "", answer.flag === "guardada" || answer.flag === "ok" ? "" : `omr-${answer.flag}`, answer.confidence !== null && answer.confidence < 0.9 ? "omr-low-confidence" : ""].filter(Boolean).join(" ")}>
@@ -1053,7 +1063,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
             Confirmar todas las respuestas
           </button>
         </div>
-        <p className="vacio">Confirma cada pregunta o todas a la vez. La detección inicial es provisional; no se calcula nota ni se guarda la imagen. La confianza es un indicador de detección, no una probabilidad de acierto calibrada. Se señala como baja si es inferior al 90 %; al abrir respuestas guardadas no está disponible.</p>
+        <p className="vacio">Confirma cada pregunta o todas a la vez, incluidos los blancos. La detección inicial de una imagen es provisional; la confianza no es una probabilidad de acierto calibrada y se señala como baja si es inferior al 90 %. No está disponible en entradas manuales o guardadas. La nota se calcula en el servidor al guardar con una clave validada; no se guarda la imagen.</p>
         {studentError && <p className="error" role="alert">{studentError}</p>}
         {!keyValidated || !selectedStudentId || review.some((answer) => !answer.confirmed) ? <p className="vacio" role="status">
           {!keyValidated
@@ -1064,7 +1074,6 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
         </p> : null}
         <div className="fila-acciones"><button type="submit" disabled={saving || review.some((answer) => !answer.confirmed) || !selectedStudentId || !keyValidated}>{saving ? "Guardando y puntuando…" : "Confirmar entrega y nota"}</button><button type="button" className="secundario" onClick={reset} disabled={saving}>Cancelar revisión</button></div>
       </form>}
-      </>}
   </section>
 
   <section className="tarjeta">
@@ -1072,7 +1081,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     <p className="vacio">Alumnos y respuestas revisadas se guardan solo para este examen. La hoja no se conserva. El DNI/NIE es accesible al propietario y a los administradores autorizados.</p>
     <form onSubmit={createStudent} className="omr-student-form">
       <label htmlFor="student-name">Nombre completo</label><input id="student-name" value={newName} onChange={(event) => setNewName(event.target.value)} maxLength={160} required />
-      <label htmlFor="student-dni">DNI/NIE</label><input id="student-dni" value={newDni} onChange={(event) => setNewDni(event.target.value)} maxLength={20} required />
+      <label htmlFor="student-dni">DNI/NIE (opcional, recomendado)</label><input id="student-dni" value={newDni} onChange={(event) => setNewDni(event.target.value)} maxLength={20} />
       <button type="submit">Añadir alumno</button>
     </form>
     <div className="omr-import">
@@ -1085,18 +1094,19 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       <h3 id="edit-student-heading">Editar datos de {editingStudent.name}</h3>
       <label htmlFor="edit-student-name">Nombre completo</label>
       <input id="edit-student-name" ref={editorNameRef} value={editName} onChange={(event) => setEditName(event.target.value)} maxLength={160} required disabled={editingSaving} aria-describedby={editError ? "edit-student-error" : undefined} />
-      <label htmlFor="edit-student-dni">DNI/NIE</label>
-      <input id="edit-student-dni" value={editDni} onChange={(event) => setEditDni(event.target.value)} maxLength={20} required disabled={editingSaving} aria-describedby={editError ? "edit-student-error" : undefined} />
+      <label htmlFor="edit-student-dni">DNI/NIE (opcional, recomendado)</label>
+      <input id="edit-student-dni" value={editDni} onChange={(event) => setEditDni(event.target.value)} maxLength={20} disabled={editingSaving} aria-describedby={editError ? "edit-student-error" : undefined} />
       {editError && <><p id="edit-student-error" className="error" role="alert">{editError}</p><button type="button" className="secundario" disabled={editingSaving} onClick={() => void reloadStudentEditor()}>Recargar ficha sin descartar la revisión</button></>}
       <div className="fila-acciones"><button type="submit" disabled={editingSaving}>{editingSaving ? "Guardando datos…" : "Guardar datos"}</button><button type="button" className="secundario" disabled={editingSaving} onClick={closeStudentEditor}>Cancelar edición de datos</button></div>
     </form>}
     {students.length === 0 ? <p className="vacio">Todavía no hay alumnos en el roster.</p> : <div className="omr-table-wrap" role="region" aria-label="Alumnos y resultados, tabla desplazable" tabIndex={0}><table><thead><tr><th>Alumno</th><th>DNI/NIE</th><th>Estado</th><th>Aciertos</th><th>Fallos</th><th>Blancos</th><th>Bruto</th><th>Nota</th><th>Acciones</th></tr></thead><tbody>
       {students.map((student) => <tr key={student.id}>
-        <td>{student.name}</td><td>{student.dni}{!normalizeStudentDocument(student.dni).success && <span className="error omr-legacy-document">Documento antiguo no válido; edita los datos para corregirlo.</span>}</td>
+        <td>{student.name}</td><td>{student.dni ?? "Sin documento"}{student.dni && !normalizeStudentDocument(student.dni).success && <span className="error omr-legacy-document">Documento antiguo no válido; edita los datos para corregirlo.</span>}</td>
         <td>{student.savedAt ? student.score === null ? "Puntuación pendiente de validar" : `Corregido · ${new Date(student.savedAt).toLocaleString("es-ES")}` : "Pendiente"}</td>
         <td>{student.correct ?? "—"}</td><td>{student.wrong ?? "—"}</td><td>{student.blank ?? "—"}</td><td>{student.rawScore ?? "—"}</td><td>{student.score ?? "—"}</td>
         <td><div className="fila-acciones">
           <button type="button" className="secundario" onClick={(event) => openStudentEditor(student, event.currentTarget)} disabled={editingSaving}>Editar datos</button>
+          {!student.savedAt && <button type="button" className="secundario" onClick={() => enterManualAnswers(student)} disabled={busy || saving}>Introducir respuestas</button>}
           {student.savedAt && <><a className="export-link" href={`/api/exams/${examId}/export?type=report&format=pdf&studentId=${student.id}`}>Informe PDF</a><button type="button" className="secundario" onClick={() => editSaved(student)} disabled={!keyValidated}>Abrir / editar respuestas</button><button type="button" className="peligro" onClick={() => void deleteResult(student)}>Eliminar entrega</button></>}
           <button type="button" className="peligro" onClick={() => void deleteStudent(student)}>Eliminar alumno</button>
         </div></td>

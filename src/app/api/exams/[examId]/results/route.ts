@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { resolveExamAccess } from "@/lib/access";
 import { saveOwnedReviewedResult } from "@/lib/exam-results";
 import { readJsonLimited } from "@/lib/http";
+import { matchesQueueAccount } from "@/lib/offline-queue/account";
 
 type RouteContext = { params: Promise<{ examId: string }> };
 const idSchema = z.string().uuid();
@@ -10,6 +11,7 @@ const idSchema = z.string().uuid();
 export async function POST(request: Request, context: RouteContext) {
   const session = await auth();
   if (!session?.user?.id) return Response.json({ error: "No autenticado." }, { status: 401 });
+  if (!matchesQueueAccount(request.headers, session.user.id)) return Response.json({ error: "Inicia sesión con la cuenta original de esta entrega.", code: "account_changed" }, { status: 401 });
   const { examId } = await context.params;
   const id = idSchema.safeParse(examId);
   if (!id.success) return Response.json({ error: "Examen no encontrado." }, { status: 404 });

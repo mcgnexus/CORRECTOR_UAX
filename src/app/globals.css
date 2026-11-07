@@ -9,6 +9,19 @@
   --radio: 10px;
 }
 
+.cabecera-app nav a { color: #fff; padding: 0.5rem 0; }
+.student-directory-list { list-style: none; padding: 0; }
+.student-directory-list > li { border-bottom: 1px solid var(--borde); padding: 1rem 0; }
+.student-directory-list p { margin: 0.3rem 0; }
+.student-check { display: flex; align-items: flex-start; gap: 0.6rem; font-weight: 500; }
+.student-check input, .student-preview-scroll input[type="checkbox"] { width: 1.25rem; height: 1.25rem; flex-shrink: 0; }
+.student-directory-list dt { font-weight: 600; }
+.student-directory-list dd { margin-left: 0; }
+.student-preview-scroll { overflow-x: auto; max-width: 100%; }
+.student-preview-scroll table { min-width: 560px; }
+.student-mapping { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.5rem; }
+.student-mapping > div { min-width: 0; }
+
 * {
   box-sizing: border-box;
 }

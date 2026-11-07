@@ -23,6 +23,10 @@ export const users = pgTable(
   {
     id: uuid("id").defaultRandom().primaryKey(),
     name: varchar("name", { length: 100 }).notNull(),
+    lastName: varchar("last_name", { length: 100 }),
+    institution: varchar("institution", { length: 160 }),
+    department: varchar("department", { length: 160 }),
+    sessionVersion: integer("session_version").notNull().default(1),
     email: varchar("email", { length: 254 }).notNull(),
     passwordHash: text("password_hash").notNull(),
     role: varchar("role", { length: 16 }).notNull().default("teacher"),
@@ -80,6 +84,31 @@ export const examMatrixProfiles = pgTable("exam_matrix_profiles", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const students = pgTable("students", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 160 }).notNull(),
+  dni: varchar("dni", { length: 20 }),
+  email: varchar("email", { length: 254 }),
+  academicCode: varchar("academic_code", { length: 100 }),
+  groups: text("groups").array().notNull().default(sql`'{}'::text[]`),
+  metadata: jsonb("metadata").$type<Record<string, string>>().notNull().default({}),
+  version: integer("version").notNull().default(1),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("students_owner_dni_unique").on(table.ownerId, table.dni),
+  uniqueIndex("students_owner_code_unique").on(table.ownerId, table.academicCode),
+  index("students_owner_name_idx").on(table.ownerId, table.name),
+]);
+
+export const studentImports = pgTable("student_imports", {
+  ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  fingerprint: varchar("fingerprint", { length: 64 }).notNull(),
+  count: integer("count").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [primaryKey({ columns: [table.ownerId, table.fingerprint] })]);
+
 export const examStudents = pgTable(
   "exam_students",
   {
@@ -88,11 +117,14 @@ export const examStudents = pgTable(
       .notNull()
       .references(() => exams.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 160 }).notNull(),
-    dni: varchar("dni", { length: 20 }).notNull(),
+    dni: varchar("dni", { length: 20 }),
+    studentId: uuid("student_id").references(() => students.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     uniqueIndex("exam_students_exam_dni_unique").on(table.examId, table.dni),
+    uniqueIndex("exam_students_exam_student_unique").on(table.examId, table.studentId),
+    index("exam_students_student_idx").on(table.studentId),
     index("exam_students_exam_name_idx").on(table.examId, table.name),
   ],
 );

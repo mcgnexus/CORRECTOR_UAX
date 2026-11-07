@@ -14,7 +14,7 @@ export type ExportKeyItem = { questionNo: number; correctOption: string };
 export type ExportStudent = {
   id: string;
   name: string;
-  dni: string;
+  dni: string | null;
   savedAt: Date | string | null;
   answers: Array<{ questionNo: number; optionIndex: number | null }> | null;
   correct: number | null;
