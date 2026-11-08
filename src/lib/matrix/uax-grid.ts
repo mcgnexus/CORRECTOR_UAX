@@ -94,7 +94,14 @@ function paperPercentiles(image: GrayImage) {
   return { bright, threshold: Math.round((bright + dark) / 2) };
 }
 
-/** Searches the best phase for each expected line within ±6 px (real photos
+/** How far an expected line may sit from its canonical position, plus the
+ * thickness band around it: tolerance = LINE_SEARCH_PX + LINE_BAND_PX (13 px). */
+const LINE_SEARCH_PX = 10;
+const LINE_BAND_PX = 3;
+/** Grid cells are 44 px tall, so a window up to ±13 px never reaches the neighbor
+ * line while still rejecting a divider placed mid-cell (22 px away). */
+
+/** Searches the best phase for each expected line within ±10 px (real photos
  * drift more than the old fixed ±3 px band) and reports every failing line
  * with its support so the operator learns WHICH check failed. */
 function analyzeGrid(image: GrayImage): LatticeAnalysis {
@@ -104,13 +111,13 @@ function analyzeGrid(image: GrayImage): LatticeAnalysis {
   const probe = (horizontal: boolean, position: number) => {
     let best = 0, bestCenter = -1, bestOffset = 0;
     const length = horizontal ? 320 : 880;
-    // The wide ±3 band gates line presence; the exact center pixel selects the
+    // The wide band gates line presence; the exact center pixel selects the
     // phase, so a line drifting 2 px still reports its true offset (ties favor 0).
-    for (let magnitude = 0; magnitude <= 6; magnitude++) for (const offset of magnitude === 0 ? [0] : [magnitude, -magnitude]) {
+    for (let magnitude = 0; magnitude <= LINE_SEARCH_PX; magnitude++) for (const offset of magnitude === 0 ? [0] : [magnitude, -magnitude]) {
       let hits = 0, center = 0, count = 0;
       for (let i = 5; i < length - 5; i += 3) {
         let dark = false;
-        for (let d = -3; d <= 3; d++) {
+        for (let d = -LINE_BAND_PX; d <= LINE_BAND_PX; d++) {
           const x = horizontal ? i : clampCol(position + offset + d);
           const y = horizontal ? clampRow(position + offset + d) : i;
           if (image.data[y * 320 + x] < threshold) { dark = true; break; }
@@ -140,8 +147,12 @@ function analyzeGrid(image: GrayImage): LatticeAnalysis {
     if (best < .86) failures.push({ kind: "vertical", index: col, support: best, offset: bestOffset });
   }
   // Reject extra horizontal dividers (for example an included header row).
+  // A real divider shares the lattice phase; probing only ±LINE_BAND_PX around
+  // the phase-corrected mid-cell keeps the wide line window from grazing the
+  // neighboring real line when the grid drifts.
   for (let row = 0; row < 20; row++) {
-    const { best } = probe(true, Math.min(879, row * 44 + 22));
+    const phase = (horizontalOffsets[row] + horizontalOffsets[row + 1]) / 2;
+    const { best } = probe(true, Math.min(879, row * 44 + 22 + phase));
     if (best > .65) failures.push({ kind: "divider", index: row, support: best, offset: 0 });
   }
   return { ok: failures.length === 0, threshold, bright, failures, horizontalOffsets, verticalOffsets };
@@ -178,7 +189,7 @@ export function validateUaxTables(image: GrayImage, tables: UaxTableGeometry[]):
     const worst = analysis.failures.sort((a, b) => a.support - b.support).slice(0, 3)
       .map(f => `${f.kind === "horizontal" ? "línea horizontal" : f.kind === "vertical" ? "línea vertical" : "división dentro de la fila"} ${f.index} con soporte ${Math.round(f.support * 100)}% (fase ${f.offset >= 0 ? "+" : ""}${f.offset})`)
       .join("; ");
-    throw new Error(`No se valida la estructura de cuadrícula 20x5 de la tabla ${worse === 0 ? "izquierda (1-20)" : "derecha (21-40)"}: ${analysis.failures.length ? worst : "papel apenas legible"}. Se exige tinta en el 86% de cada línea, buscando hasta 6 píxeles de desfase. Ajusta las esquinas o repite la captura.`);
+    throw new Error(`No se valida la estructura de cuadrícula 20x5 de la tabla ${worse === 0 ? "izquierda (1-20)" : "derecha (21-40)"}: ${analysis.failures.length ? worst : "papel apenas legible"}. Se exige tinta en el 86% de cada línea, buscando hasta ${LINE_SEARCH_PX + LINE_BAND_PX} píxeles de desfase. Ajusta las esquinas o repite la captura.`);
   }
   return rectified;
 }

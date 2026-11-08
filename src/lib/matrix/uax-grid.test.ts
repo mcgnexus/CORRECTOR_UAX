@@ -83,7 +83,7 @@ test("UAX accepts lightly printed real sheets judged by contrast, not by a fixed
 test("UAX tolerates corners marked a few pixels off before the lattice drifts beyond the search window", () => {
   const { image, tables } = syntheticUax();
   const moved: typeof tables = [
-    { corners: tables[0].corners.map((p, i) => i >= 2 ? { x: p.x, y: p.y + 5 } : p) as typeof tables[0]["corners"] },
+    { corners: tables[0].corners.map((p, i) => i >= 2 ? { x: p.x, y: p.y + 8 } : p) as typeof tables[0]["corners"] },
     tables[1],
   ];
   const profile = calibrateUaxGrid(image, moved);
