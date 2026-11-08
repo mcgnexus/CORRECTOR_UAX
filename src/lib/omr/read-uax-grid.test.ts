@@ -7,6 +7,18 @@ import { readUaxGrid } from "./read-uax-grid";
 const blank = syntheticUax();
 const profile = calibrateUaxGrid(blank.image, blank.tables);
 
+test("UAX reads with a reference calibrated from slightly offset corners", () => {
+  const sheet = syntheticUax();
+  const moved = sheet.tables.map(t => ({ corners: [{ ...t.corners[0] }, { ...t.corners[1] }, { ...t.corners[2] }, { ...t.corners[3] }].map(p => ({ x: p.x + 2, y: p.y + 2 })) as typeof t.corners }));
+  const drifted = calibrateUaxGrid(sheet.image, moved);
+  const capture = syntheticUax({ marks: [{ q: 1, option: 0, kind: "cross" }, { q: 40, option: 3, kind: "circle" }] });
+  const result = readUaxGrid(capture.image, drifted, capture.tables);
+  assert.equal(result.answers[0].detected, 0);
+  assert.equal(result.answers[0].flag, "ok");
+  assert.equal(result.answers[39].detected, 3);
+  assert.equal(result.answers[39].flag, "ok");
+});
+
 test("UAX printed letters, lines and numbering alone produce exactly 40 blanks", () => {
   const result = readUaxGrid(blank.image, profile, blank.tables);
   assert.equal(result.answers.length, 40);

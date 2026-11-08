@@ -144,16 +144,35 @@ function analyzeGrid(image: GrayImage, pad = 0): LatticeAnalysis {
   const failures: LatticeFailure[] = [];
   const horizontalOffsets: number[] = [];
   const verticalOffsets: number[] = [];
+  const horizontalValid: boolean[] = [];
+  const verticalValid: boolean[] = [];
   for (let row = 0; row <= 20; row++) {
     const { best, bestOffset } = probe(true, row * 44);
     horizontalOffsets.push(bestOffset);
+    horizontalValid.push(best >= .86);
     if (best < .86) failures.push({ kind: "horizontal", index: row, support: best, offset: bestOffset });
   }
   for (let col = 0; col <= 5; col++) {
     const { best, bestOffset } = probe(false, col * 64);
     verticalOffsets.push(bestOffset);
+    verticalValid.push(best >= .86);
     if (best < .86) failures.push({ kind: "vertical", index: col, support: best, offset: bestOffset });
   }
+  // A missing line's measured phase is garbage; interpolate it from the nearest
+  // valid neighbors so downstream consumers (blank check, ink windows, divider
+  // phase) keep coherent geometry even when an edge line is cropped.
+  const sanitize = (offsets: number[], valid: boolean[]) => {
+    for (let i = 0; i < offsets.length; i++) {
+      if (valid[i]) continue;
+      let prev = i - 1; while (prev >= 0 && !valid[prev]) prev--;
+      let next = i + 1; while (next < valid.length && !valid[next]) next++;
+      if (prev >= 0 && next < valid.length) offsets[i] = offsets[prev] + (offsets[next] - offsets[prev]) * (i - prev) / (next - prev);
+      else if (prev >= 0) offsets[i] = offsets[prev];
+      else if (next < valid.length) offsets[i] = offsets[next];
+    }
+  };
+  sanitize(horizontalOffsets, horizontalValid);
+  sanitize(verticalOffsets, verticalValid);
   // Reject extra horizontal dividers (for example an included header row).
   // A real divider shares the lattice phase, so the probe sits on the
   // phase-corrected mid-cell; but a printed glyph row lands there too when the
@@ -394,11 +413,31 @@ function referenceIsBlank(image: GrayImage, lattice: LatticeAnalysis) {
   return true;
 }
 
-export function validateUaxReference(image: GrayImage, measured?: LatticeAnalysis) {
-  // Phases measured on the PADDED rectification are accurate even at edge rows;
-  // an unpadded measurement would corrupt them once lines drift past the border.
-  const lattice = measured ?? analyzeGrid(image);
-  if (!lattice.ok || !referenceIsBlank(image, lattice)) throw new Error("Referencia incompatible: usa una cuadricula UAX en blanco completa.");
+/** Replicates the border pixels outward so canonical content that falls
+ * slightly outside the exact-size canvas (calibration drift) becomes visible
+ * to the lattice probes, exactly like rectifying with padding. */
+function padGray(image: GrayImage, pad: number): GrayImage {
+  const width = image.width + 2 * pad, height = image.height + 2 * pad;
+  const data = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const sx = Math.max(0, Math.min(image.width - 1, x - pad));
+    const sy = Math.max(0, Math.min(image.height - 1, y - pad));
+    data[y * width + x] = image.data[sy * image.width + sx];
+  }
+  return { width, height, data };
+}
+
+export function validateUaxReference(image: GrayImage, measured?: LatticeAnalysis, options?: { ignoreEdgeLines?: boolean }) {
+  // Phases measured on the PADDED view are accurate even at edge rows; an
+  // unpadded measurement would corrupt them once lines drift past the border.
+  const lattice = measured ?? analyzeGrid(padGray(image, UAX_GRID_PAD), UAX_GRID_PAD);
+  // A reference rectified with a slightly drifted quad may legitimately crop the
+  // outer border lines; they carry no reading information, so the reader skips
+  // them while still requiring every inner line and the glyphs.
+  const failures = options?.ignoreEdgeLines
+    ? lattice.failures.filter(f => !((f.kind === "horizontal" && (f.index === 0 || f.index === 20)) || (f.kind === "vertical" && (f.index === 0 || f.index === 5))))
+    : lattice.failures;
+  if (failures.length > 0 || !referenceIsBlank(image, lattice)) throw new Error("Referencia incompatible: usa una cuadricula UAX en blanco completa.");
   for (let row = 0; row < 20; row++) for (let col = 0; col < 5; col++) {
     const cx = (col + .5) * 64 + phaseAt(lattice, true, col);
     const cy = (row + .5) * 44 + phaseAt(lattice, false, row);

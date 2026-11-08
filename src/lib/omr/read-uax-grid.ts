@@ -16,7 +16,7 @@ function decodeReferences(profile: UaxGridProfile): GrayImage[] {
     const binary = atob(table.reference);
     if (binary.length !== 320 * 880) throw new Error("Longitud de referencia UAX incompatible.");
     const image = { width: 320, height: 880, data: Uint8Array.from(binary, c => c.charCodeAt(0)) };
-    validateUaxReference(image);
+    validateUaxReference(image, undefined, { ignoreEdgeLines: true });
     return image;
   });
 }
