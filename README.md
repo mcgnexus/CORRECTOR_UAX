@@ -36,8 +36,12 @@ respuestas desde el móvil. La especificación completa está en
    - `npm run db:migrate`
 4. Escribir la API key de DeepSeek en `DEEPSEEK_API_KEY` dentro de `.env.local`
    (el archivo se crea con la variable vacía). Está ignorado por Git y no debe
-   compartirse. `DEEPSEEK_MODEL` usa `deepseek-flash` por defecto. Reiniciar el
-   servidor tras cambiar variables.
+   compartirse. `DEEPSEEK_MODEL` usa `deepseek-chat` por defecto para texto;
+   `DEEPSEEK_VISION_MODEL` usa `deepseek-flash` para imágenes. Reiniciar el
+   servidor tras cambiar variables. La lectura visual es experimental y envía
+   los recortes confirmados a DeepSeek; requiere revisar todas las respuestas.
+   Configurar límites de gasto en el proveedor: la aplicación no establece una
+   cuota distribuida para solicitudes de visión.
 
 ## Desarrollo
 

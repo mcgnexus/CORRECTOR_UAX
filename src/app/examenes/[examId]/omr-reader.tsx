@@ -11,8 +11,11 @@ import { detectRegistrationMarkers, markersFromPoints, type MatrixMarker, type P
 import { applyTonePixels, autoTone, composeCrop, FULL_CROP, isFullCrop, normalizeSelection, type CropRect, type Tone } from "@/lib/omr/retouch";
 import { deleteQueuedResult, listQueuedResults, purgeQueuedResults, saveQueuedResult, type QueuedResult } from "@/lib/offline-queue/indexed-db";
 import { applyQueueDecision, classifyQueueResponse } from "@/lib/offline-queue/queue-state";
+import { visionReview } from "@/lib/vision-review";
+import UaxVisionCrop from "./uax-vision-crop";
 
 type Props = {
+  sheetFormat: "bubbles" | "uax-grid-40";
   examId: string;
   structureVersion: number;
   ownerId: string;
@@ -46,6 +49,7 @@ type ReviewAnswer = {
   flag: OmrAnswer["flag"] | "guardada";
   selectedOption: number | null;
   confirmed: boolean;
+  unresolved?: boolean;
 };
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
@@ -94,8 +98,10 @@ function reviewFromAnswers(answers: Array<{ questionNo: number; optionIndex: num
   }));
 }
 
-export default function OmrReader({ examId, ownerId, structureVersion, numQuestions, numOptions, profile, initialStudents: students, onStudentsChange, keyValidated, onKeyPending }: Props) {
+export default function OmrReader({ sheetFormat, examId, ownerId, structureVersion, numQuestions, numOptions, profile, initialStudents: students, onStudentsChange, keyValidated, onKeyPending }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [previewCanvas, setPreviewCanvas] = useState<HTMLCanvasElement | null>(null);
+  const attachCanvas = useCallback((node: HTMLCanvasElement | null) => { canvasRef.current = node; setPreviewCanvas(node); }, []);
   const workerRef = useRef<Worker | null>(null);
   const bitmapRef = useRef<ImageBitmap | null>(null);
   const baseRef = useRef<{ key: string; canvas: HTMLCanvasElement } | null>(null);
@@ -104,6 +110,9 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
   const [analyzedTone, setAnalyzedTone] = useState<Tone | null>(null);
   const operationRef = useRef(0);
   const [busy, setBusy] = useState(false);
+  const [visionMode, setVisionMode] = useState(false);
+  const [visionCrop, setVisionCrop] = useState(false);
+  const visionAbort = useRef<AbortController | null>(null);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
   const [result, setResult] = useState<OmrResult | UaxOmrResult | null>(null);
@@ -153,6 +162,9 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
   const lastAutoRetryRef = useRef(new Map<string, number>());
 
   function reset() {
+    visionAbort.current?.abort();
+    visionAbort.current = null;
+    setVisionCrop(false);
     if (previewFrameRef.current !== null) cancelAnimationFrame(previewFrameRef.current);
     previewFrameRef.current = null;
     baseRef.current = null;
@@ -190,6 +202,7 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
   }
 
   useEffect(() => () => {
+    visionAbort.current?.abort();
     if (previewFrameRef.current !== null) cancelAnimationFrame(previewFrameRef.current);
     baseRef.current = null;
     workerRef.current?.terminate();
@@ -200,6 +213,8 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
     operationRef.current += 1;
     workerRef.current?.terminate();
     workerRef.current = null;
+    visionAbort.current?.abort();
+    visionAbort.current = null;
     setBusy(false);
   }, [profile]);
 
@@ -513,7 +528,7 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
     if (!file) return;
     if (!file.type.startsWith("image/")) { setError("Elige una imagen JPG, PNG o WebP."); return; }
     if (file.size > MAX_FILE_SIZE) { setError("La imagen supera 20 MB. Elige una foto más pequeña."); return; }
-    if (!profile || !keyValidated) return;
+    if ((!profile && !visionMode) || !keyValidated) return;
     setBusy(true);
     try {
       const bitmap = await createImageBitmap(file);
@@ -526,7 +541,13 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
       }
       bitmapRef.current = bitmap;
       setImageLoaded(true);
-      renderAndAnalyze(bitmap.height <= bitmap.width ? 90 : 0, { brightness: 0, contrast: 1 }, undefined, FULL_CROP, true);
+      if (visionMode) {
+        const angle = bitmap.height <= bitmap.width ? 90 : 0;
+        setRotation(angle);
+        paint(angle, FULL_CROP, { brightness: 0, contrast: 1 });
+        setBusy(false);
+        setVisionCrop(true);
+      } else renderAndAnalyze(bitmap.height <= bitmap.width ? 90 : 0, { brightness: 0, contrast: 1 }, undefined, FULL_CROP, true);
     } catch (cause) {
       if (operation !== operationRef.current) return;
       setError(cause instanceof Error ? cause.message : "No se pudo abrir la imagen.");
@@ -536,10 +557,45 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
 
   function rotateImage(delta: number) {
     if (!bitmapRef.current) return;
+    if (visionMode) {
+      const angle = (rotation + delta + 360) % 360;
+      setRotation(angle);
+      paint(angle, FULL_CROP, tone);
+      setVisionCrop(false);
+      return;
+    }
     setCropDraft(null);
     cropDraftRef.current = null;
     setCropMode(false);
     renderAndAnalyze((rotation + delta + 360) % 360, tone, undefined, FULL_CROP);
+  }
+
+  async function sendVision(images: [string, string]) {
+    const operation = ++operationRef.current;
+    const controller = new AbortController();
+    visionAbort.current = controller;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/exams/${examId}/vision`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ consent: true, images }), signal: controller.signal,
+      });
+      const data: unknown = await response.json();
+      if (operation !== operationRef.current) return;
+      if (!response.ok) throw new Error(typeof data === "object" && data !== null && "error" in data && typeof data.error === "string" ? data.error : "No se pudo analizar la imagen con DeepSeek.");
+      const answers = visionReview(data);
+      setReview(answers);
+      setReviewHasUnsavedChanges(true);
+      setProfileAtReadStart(profile);
+      setResult(null);
+      setVisionCrop(false);
+      setFeedback("Propuesta experimental de DeepSeek. Comprueba cada respuesta con la imagen y confírmala antes de guardar.");
+    } catch (cause) {
+      if (operation === operationRef.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : "No se pudo analizar la imagen con DeepSeek.");
+    } finally {
+      if (operation === operationRef.current) { setBusy(false); visionAbort.current = null; }
+    }
   }
 
   function startCrop() {
@@ -884,9 +940,10 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
 
   async function saveReview(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy || saving) return;
     setStudentError("");
     setFeedback("");
-    if (!review || review.some((answer) => !answer.confirmed)) {
+    if (!review || review.some((answer) => !answer.confirmed || answer.unresolved)) {
       setStudentError("Confirma cada pregunta antes de guardar.");
       return;
     }
@@ -1123,7 +1180,7 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
 
   const disabledReason = !keyValidated
     ? "Valida una clave completa antes de corregir hojas."
-    : !profile
+    : !profile && !visionMode
     ? "Primero calibra la matriz de este examen."
     : numQuestions > 50
       ? "La lectura está limitada a 50 preguntas hasta disponer de una matriz multipágina."
@@ -1132,8 +1189,9 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
   return <>
   <section className="tarjeta">
     <h2>Introducir examen del alumno</h2>
+    {sheetFormat === "uax-grid-40" && <label>Método de lectura <select value={visionMode ? "vision" : "local"} disabled={busy || saving} onChange={(event) => { if (review && !window.confirm("Cambiar de método descartará la revisión actual. ¿Continuar?")) return; reset(); setVisionMode(event.target.value === "vision"); }}><option value="local">Lectura local (OMR)</option><option value="vision">Visión directa con DeepSeek (experimental)</option></select></label>}
     {profile && "format" in profile && profile.format === "uax-grid-40" && <p className="aviso">Lectura UAX experimental: aún no validada con hojas reales. Comprueba cada respuesta contra la fotografía antes de guardar.</p>}
-    <p className="vacio">Usa «Introducir respuestas» en el roster para crear una entrega manual sin fotografía ni calibración. También puedes fotografiar una hoja calibrada. Solo al guardar se envían el alumno y las respuestas revisadas; la foto nunca se sube ni se conserva.</p>
+    <p className="vacio">Usa «Introducir respuestas» para una entrega manual. La lectura local no sube la foto; si eliges DeepSeek, solo se envían los recortes que confirmes expresamente.</p>
     {disabledReason ? <p className="vacio">{disabledReason} {!profile && <Link href={`/examenes/${examId}#calibracion`}>Ir a calibración</Link>}</p> : <>
       <div className="fila-acciones">
         <label className="boton" htmlFor="omr-camera" aria-disabled={busy || saving}>Abrir cámara</label>
@@ -1144,7 +1202,7 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
       </div>
       <div className="omr-canvas-wrap">
         <canvas
-          ref={canvasRef}
+          ref={attachCanvas}
           className="omr-preview"
           hidden={!imageLoaded}
           aria-label={cropMode ? "Zona de recorte: arrastra para seleccionar el área de la hoja." : profile && "format" in profile && profile.format === "uax-grid-40" ? "Hoja cargada. Marca las esquinas de las dos tablas cuando se solicite." : "Hoja cargada. Toca el centro de cada cuadrado negro cuando se solicite."}
@@ -1157,14 +1215,16 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
         />
         {cropMode && cropDraft ? <div className="crop-selection" style={{ left: cropDraft.x * 100 + "%", top: cropDraft.y * 100 + "%", width: cropDraft.w * 100 + "%", height: cropDraft.h * 100 + "%" }} /> : null}
       </div>
+      {visionMode && imageLoaded && visionCrop && previewCanvas && <UaxVisionCrop canvas={previewCanvas} busy={busy} onSubmit={(images) => { void sendVision(images); }} onCancel={() => setVisionCrop(false)} />}
       {imageLoaded && <div className="fila-acciones">
         <button type="button" className="secundario" onClick={() => rotateImage(-90)} disabled={busy || saving}>Girar izquierda</button>
         <button type="button" className="secundario" onClick={() => rotateImage(90)} disabled={busy || saving}>Girar derecha</button>
-        <button type="button" className="secundario" onClick={startCrop} disabled={busy || saving || cropMode}>Recortar</button>
-        <button type="button" className="secundario" onClick={autoRetouch} disabled={busy || saving || cropMode || manualMode}>Retoque automático</button>
-        <button type="button" className="secundario" onClick={startManualMarkers} disabled={busy || saving || cropMode}>Marcar esquinas</button>
-        {profile && "format" in profile && profile.format === "uax-grid-40" && <button type="button" className="secundario" onClick={startTapMode} disabled={busy || saving || cropMode}>Dos toques por tabla</button>}
-        <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving || cropMode}>Releer marcas</button>
+        {visionMode && <button type="button" className="secundario" onClick={() => { if (review && !window.confirm("Una nueva lectura sustituirá la revisión actual. ¿Descartarla?")) return; setReview(null); setReviewHasUnsavedChanges(false); setVisionCrop(true); }} disabled={busy || saving}>Seleccionar tablas para DeepSeek</button>}
+        {!visionMode && <button type="button" className="secundario" onClick={startCrop} disabled={busy || saving || cropMode}>Recortar</button>}
+        {!visionMode && <button type="button" className="secundario" onClick={autoRetouch} disabled={busy || saving || cropMode || manualMode}>Retoque automático</button>}
+        {!visionMode && <button type="button" className="secundario" onClick={startManualMarkers} disabled={busy || saving || cropMode}>Marcar esquinas</button>}
+        {!visionMode && profile && "format" in profile && profile.format === "uax-grid-40" && <button type="button" className="secundario" onClick={startTapMode} disabled={busy || saving || cropMode}>Dos toques por tabla</button>}
+        {!visionMode && <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving || cropMode}>Releer marcas</button>}
       </div>}
       {cropMode && <div className="fila-acciones">
         <button type="button" onClick={applyCrop} disabled={!cropDraft || busy}>Aplicar recorte</button>
@@ -1172,7 +1232,7 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
       </div>}
       {cropMode ? <p className="vacio" role="status">Arrastra sobre la imagen para encuadrar la hoja. Después pulsa «Aplicar recorte».</p> : null}
       {!isFullCrop(crop) && !cropMode ? <p className="vacio">Recorte aplicado. <button type="button" className="secundario" onClick={resetCrop} disabled={busy || saving}>Restablecer recorte</button></p> : null}
-      {imageLoaded && <fieldset className="matriz-ajustes">
+      {imageLoaded && !visionMode && <fieldset className="matriz-ajustes">
         <legend>Retoque de imagen</legend>
         <label htmlFor="omr-brightness">Brillo ({tone.brightness})</label>
         <input id="omr-brightness" type="range" disabled={busy || saving || manualMode} min={-60} max={60} step={2} value={tone.brightness} onChange={(event) => previewTone({ ...tone, brightness: Number(event.target.value) })} />
@@ -1196,7 +1256,7 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
       </fieldset>}
       {detectedMarkers && !manualMode && <p className="vacio" role="status">Se han localizado las cuatro marcas de registro.</p>}
       {detectedTables && !manualMode && <p className="vacio" role="status">Se han localizado las dos tablas. Comprueba que 1 y 21 estén en la tabla correcta.</p>}
-      {busy && <p role="status">Procesando localmente… {progress}%</p>}
+      {busy && <p role="status">{visionMode ? "Procesando imagen…" : `Procesando localmente… ${progress}%`}</p>}
       {error && <p className="error" role="alert">{error}</p>}
       {review && reviewHasUnsavedChanges && profileAtReadStart !== profile ? <p className="aviso" role="status">La calibración cambió. Se aplicará a la próxima lectura; la revisión actual no se recalcula automáticamente.</p> : null}
       {result && <>
@@ -1214,11 +1274,12 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
             <td>{answer.q}</td>
             <td>{answer.flag === "guardada" ? (answer.detected === null ? "En blanco" : LABELS[answer.detected] ?? answer.detected + 1) : answer.detected === null ? "—" : LABELS[answer.detected] ?? answer.detected + 1} {answer.flag !== "guardada" && answer.flag !== "ok" ? `· ${FLAGS[answer.flag]}` : ""}</td>
             <td>{answer.confidence === null ? "—" : `${Math.floor(answer.confidence * 1000) / 10}%`}{answer.confidence !== null && answer.confidence < 0.9 ? <span className="omr-confidence-label">Confianza baja</span> : null}</td>
-            <td><select aria-label={`Respuesta final pregunta ${answer.q}`} value={answer.selectedOption === null ? "blank" : String(answer.selectedOption)} onChange={(event) => { setReviewHasUnsavedChanges(true); setReview((current) => current?.map((item, itemIndex) => itemIndex === index ? { ...item, selectedOption: event.target.value === "blank" ? null : Number(event.target.value), confirmed: false } : item) ?? null); }}>
+            <td><select aria-label={`Respuesta final pregunta ${answer.q}`} value={answer.unresolved ? "unresolved" : answer.selectedOption === null ? "blank" : String(answer.selectedOption)} onChange={(event) => { setReviewHasUnsavedChanges(true); setReview((current) => current?.map((item, itemIndex) => itemIndex === index ? { ...item, selectedOption: event.target.value === "blank" ? null : Number(event.target.value), unresolved: false, confirmed: false } : item) ?? null); }}>
+              {answer.unresolved && <option value="unresolved" disabled>Selecciona una respuesta</option>}
               <option value="blank">En blanco</option>
               {Array.from({ length: numOptions }, (_, option) => <option key={option} value={option}>{LABELS[option]}</option>)}
             </select></td>
-            <td>{answer.confirmed ? <span className="ok">Confirmada</span> : <button type="button" className="secundario" onClick={() => setReview((current) => current?.map((item, itemIndex) => itemIndex === index ? { ...item, confirmed: true } : item) ?? null)}>Confirmar</button>}</td>
+            <td>{answer.confirmed ? <span className="ok">Confirmada</span> : <button type="button" className="secundario" disabled={busy || answer.unresolved} onClick={() => setReview((current) => current?.map((item, itemIndex) => itemIndex === index && !item.unresolved ? { ...item, confirmed: true } : item) ?? null)}>Confirmar</button>}</td>
           </tr>)}
         </tbody></table></div>
         <div className="fila-acciones">
@@ -1226,12 +1287,12 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
             type="button"
             className="secundario"
             disabled={busy || saving || review.every((answer) => answer.confirmed)}
-            onClick={() => setReview((current) => current?.map((item) => ({ ...item, confirmed: true })) ?? null)}
+            onClick={() => setReview((current) => current?.map((item) => item.unresolved ? item : { ...item, confirmed: true }) ?? null)}
           >
             Confirmar todas las respuestas
           </button>
         </div>
-        <p className="vacio">Confirma cada pregunta o todas a la vez, incluidos los blancos. La detección inicial de una imagen es provisional; la confianza no es una probabilidad de acierto calibrada y se señala como baja si es inferior al 90 %. No está disponible en entradas manuales o guardadas. La nota se calcula en el servidor al guardar con una clave validada; no se guarda la imagen.</p>
+        <p className="vacio">Confirma cada pregunta o todas a la vez, incluidos los blancos. Las marcas dudosas o múltiples de DeepSeek requieren elegir expresamente una respuesta o blanco. La detección es provisional; la nota se calcula al guardar y no se guarda la imagen.</p>
         {studentError && <p className="error" role="alert">{studentError}</p>}
         {!keyValidated || !selectedStudentId || review.some((answer) => !answer.confirmed) ? <p className="vacio" role="status">
           {!keyValidated
@@ -1240,7 +1301,7 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
               ? "Selecciona un alumno del roster."
               : "Confirma todas las respuestas o pulsa «Confirmar todas las respuestas»."}
         </p> : null}
-        <div className="fila-acciones"><button type="submit" disabled={saving || review.some((answer) => !answer.confirmed) || !selectedStudentId || !keyValidated}>{saving ? "Guardando y puntuando…" : "Confirmar entrega y nota"}</button><button type="button" className="secundario" onClick={reset} disabled={saving}>Cancelar revisión</button></div>
+        <div className="fila-acciones"><button type="submit" disabled={busy || saving || review.some((answer) => !answer.confirmed || answer.unresolved) || !selectedStudentId || !keyValidated}>{saving ? "Guardando y puntuando…" : "Confirmar entrega y nota"}</button><button type="button" className="secundario" onClick={reset} disabled={busy || saving}>Cancelar revisión</button></div>
       </form>}
   </section>
 

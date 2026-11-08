@@ -256,6 +256,7 @@ export default function ExamDetalleClient({
       />}
       <p><Link href="/alumnos">Abrir mi base de alumnos e importar Excel</Link>. Desde allí puedes asignar alumnos a este examen sin repetir la importación.</p>
       <OmrReader
+        sheetFormat={examen.sheetFormat}
         ownerId={ownerId}
         examId={examen.id}
         structureVersion={examen.structureVersion}
