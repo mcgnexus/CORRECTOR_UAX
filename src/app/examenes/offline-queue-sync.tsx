@@ -50,7 +50,7 @@ export default function OfflineQueueSync({ ownerId }: { ownerId: string }) {
       const response = await fetch(`/api/exams/${entry.examId}/results`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": entry.idempotencyKey, "X-Queue-Owner": ownerId },
-        body: JSON.stringify({ studentId: entry.studentId, answers: entry.answers, replace: entry.replace, expectedVersion: entry.expectedVersion }),
+        body: JSON.stringify({ studentId: entry.studentId, answers: entry.answers, replace: entry.replace, expectedVersion: entry.expectedVersion, expectedStructureVersion: entry.expectedStructureVersion }),
       });
       const responseBody = await response.json().catch(() => ({})) as { code?: string };
       const decision = classifyQueueResponse(response.status, responseBody.code);

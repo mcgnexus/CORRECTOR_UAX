@@ -79,6 +79,7 @@ async function main() {
 
     const profile = await getOwnedMatrixProfile(ownerA, examId);
     assert.ok(profile);
+    assert.ok(profile.format !== "uax-grid-40");
     assert.equal(profile.bubbles.length, 40);
     assert.equal(await getOwnedMatrixProfile(ownerB, examId), null, "otro profesor ve la matriz");
     assert.equal((await saveOwnedMatrixProfile(ownerB, examId, {})).status, "invalid");

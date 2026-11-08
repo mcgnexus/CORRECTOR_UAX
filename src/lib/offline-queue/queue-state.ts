@@ -4,7 +4,7 @@ export type QueueDecision =
   | { action: "ack" }
   | { action: "discard"; reason: "deleted" }
   | { action: "pending"; reason: "unauthorized" | "server" | "network" | "key_pending" }
-  | { action: "blocked"; reason: "exists" | "version_conflict" | "idempotency_conflict" | "rejected" };
+  | { action: "blocked"; reason: "exists" | "version_conflict" | "structure_conflict" | "idempotency_conflict" | "rejected" };
 
 export function classifyQueueResponse(status: number, code?: string): QueueDecision {
   if (status >= 200 && status < 300) return { action: "ack" };
@@ -12,7 +12,7 @@ export function classifyQueueResponse(status: number, code?: string): QueueDecis
   if (status === 401) return { action: "pending", reason: "unauthorized" };
   if (status >= 500) return { action: "pending", reason: "server" };
   if (status === 409 && code === "key_not_validated") return { action: "pending", reason: "key_pending" };
-  if (status === 409 && (code === "exists" || code === "version_conflict" || code === "idempotency_conflict")) {
+  if (status === 409 && (code === "exists" || code === "version_conflict" || code === "structure_conflict" || code === "idempotency_conflict")) {
     return { action: "blocked", reason: code };
   }
   return { action: "blocked", reason: "rejected" };

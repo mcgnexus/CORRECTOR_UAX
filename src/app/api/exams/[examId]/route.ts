@@ -45,7 +45,8 @@ export async function PATCH(request: Request, context: RouteContext) {
   if (!access) return Response.json({ error: "Examen no encontrado." }, { status: 404 });
   const exam = await updateOwnedExam(access.ownerId, id.data, parsed.data);
   if (exam.status === "not_found") return Response.json({ error: "Examen no encontrado." }, { status: 404 });
-  if (exam.status === "results_exist") return Response.json({ error: "Elimina explícitamente las lecturas guardadas antes de cambiar preguntas u opciones." }, { status: 409 });
+  if (exam.status === "invalid") return Response.json({ error: "La configuracion no es valida. UAX requiere 40 preguntas y cuatro opciones." }, { status: 400 });
+  if (exam.status === "results_exist") return Response.json({ error: "Elimina explícitamente las lecturas guardadas antes de cambiar preguntas, opciones o formato." }, { status: 409 });
   return Response.json(exam.exam);
 }
 

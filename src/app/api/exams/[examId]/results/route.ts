@@ -30,6 +30,7 @@ export async function POST(request: Request, context: RouteContext) {
   if (result.status === "key_not_validated") return Response.json({ error: "Valida la clave del examen antes de guardar entregas.", code: "key_not_validated" }, { status: 409 });
   if (result.status === "key_invalid") return Response.json({ error: "La clave validada no supera la validación." }, { status: 409 });
   if (result.status === "version_conflict") return Response.json({ error: "La entrega cambió desde que se abrió. Recarga el roster antes de volver a guardar.", code: "version_conflict" }, { status: 409 });
+  if (result.status === "structure_conflict") return Response.json({ error: "La configuración del examen cambió o no se indicó su versión. Recarga el examen y revisa la entrega.", code: "structure_conflict" }, { status: 409 });
   if (result.status === "idempotency_conflict") return Response.json({ error: "La clave de idempotencia ya se usó con otros datos.", code: "idempotency_conflict" }, { status: 409 });
   if (result.status === "replayed_deleted") return Response.json({ error: "La entrega asociada a este reintento se eliminó; inicia una nueva corrección." }, { status: 410 });
   if (result.status === "invalid") return Response.json({ error: result.message }, { status: 400 });

@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -15,6 +16,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import type { SheetFormat, UaxGridProfile } from "@/lib/matrix/profile";
 
 export const examStatus = pgEnum("exam_status", ["draft", "key_pending", "key_validated"]);
 
@@ -46,6 +48,8 @@ export const exams = pgTable(
     subject: varchar("subject", { length: 160 }),
     numQuestions: integer("num_questions").notNull(),
     numOptions: integer("num_options").notNull().default(4),
+    sheetFormat: varchar("sheet_format", { length: 20 }).$type<SheetFormat>().notNull().default("bubbles"),
+    structureVersion: integer("structure_version").notNull().default(1),
     status: examStatus("status").notNull().default("draft"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -53,6 +57,7 @@ export const exams = pgTable(
   (table) => [
     index("exams_owner_created_idx").on(table.ownerId, table.createdAt),
     index("exams_owner_title_idx").on(table.ownerId, table.title),
+    check("exams_sheet_format_check", sql`${table.sheetFormat} = 'bubbles' or (${table.sheetFormat} = 'uax-grid-40' and ${table.numQuestions} = 40 and ${table.numOptions} = 4)`),
   ],
 );
 
@@ -75,14 +80,22 @@ export const examMatrixProfiles = pgTable("exam_matrix_profiles", {
     .primaryKey()
     .references(() => exams.id, { onDelete: "cascade" }),
   bubbles: jsonb("bubbles")
-    .$type<Array<{ questionNo: number; optionIndex: number; x: number; y: number }>>()
-    .notNull(),
-  bubbleRadius: real("bubble_radius").notNull(),
+    .$type<Array<{ questionNo: number; optionIndex: number; x: number; y: number }>>(),
+  bubbleRadius: real("bubble_radius"),
+  format: varchar("format", { length: 20 }).$type<SheetFormat>().notNull().default("bubbles"),
+  version: integer("version").notNull().default(1),
+  uaxData: jsonb("uax_data").$type<Pick<UaxGridProfile, "tables">>(),
   rowsPerBlock: integer("rows_per_block").notNull(),
   blocks: integer("blocks").notNull(),
   optionsPerBlock: integer("options_per_block").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  check("exam_matrix_profiles_shape_check", sql`${table.version} = 1 and (
+    (${table.format} = 'bubbles' and ${table.bubbles} is not null and ${table.bubbleRadius} is not null and ${table.uaxData} is null)
+    or (${table.format} = 'uax-grid-40' and ${table.bubbles} is null and ${table.bubbleRadius} is null and ${table.uaxData} is not null
+      and coalesce(jsonb_typeof(${table.uaxData}->'tables') = 'array' and jsonb_array_length(${table.uaxData}->'tables') = 2, false)
+      and ${table.rowsPerBlock} = 20 and ${table.blocks} = 2 and ${table.optionsPerBlock} = 4))`),
+]);
 
 export const students = pgTable("students", {
   id: uuid("id").defaultRandom().primaryKey(),

@@ -14,6 +14,7 @@ function newEntry(ownerId = randomUUID(), examId = randomUUID(), studentId = ran
     answers: [{ questionNo: 1, optionIndex: null }, { questionNo: 2, optionIndex: 2 }],
     replace: false,
     expectedVersion: null,
+    expectedStructureVersion: 1,
     idempotencyKey: id,
     createdAt: new Date().toISOString(),
     status: "pending",
@@ -33,6 +34,19 @@ test("IndexedDB persists entries and lists only the authenticated owner partitio
   assert.deepEqual(await listQueuedResults(ownerA), [entryA]);
   assert.deepEqual(await listQueuedResults(ownerB), [entryB]);
   assert.deepEqual(await listQueuedResults(""), []);
+});
+
+test("legacy entries remain available but cannot be retried without explicit review", async () => {
+  const owner = randomUUID();
+  const entry = newEntry(owner);
+  const legacy = { ...entry };
+  delete legacy.expectedStructureVersion;
+  await saveQueuedResult(legacy);
+  const [listed] = await listQueuedResults(owner);
+  assert.equal(listed.status, "blocked");
+  assert.equal(listed.lastError, "structure_conflict");
+  assert.equal(listed.expectedStructureVersion, undefined);
+  assert.deepEqual(listed.answers, entry.answers);
 });
 
 test("owner-checked deletion and exam/student purge do not cross partitions", async () => {

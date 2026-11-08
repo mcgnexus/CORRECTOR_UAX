@@ -1,9 +1,9 @@
 import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { examMatrixProfiles, exams } from "@/db/schema";
-import { matrixProfileInputSchema, matrixProfileProblems } from "@/lib/matrix/profile";
+import { matrixProfileInputSchema, matrixProfileProblems, type MatrixProfileInput } from "@/lib/matrix/profile";
 
-export async function getOwnedMatrixProfile(ownerId: string, examId: string) {
+export async function getOwnedMatrixProfile(ownerId: string, examId: string): Promise<(MatrixProfileInput & { examId: string; updatedAt: Date }) | null> {
   const [profile] = await getDb()
     .select({
       examId: examMatrixProfiles.examId,
@@ -13,12 +13,23 @@ export async function getOwnedMatrixProfile(ownerId: string, examId: string) {
       blocks: examMatrixProfiles.blocks,
       optionsPerBlock: examMatrixProfiles.optionsPerBlock,
       updatedAt: examMatrixProfiles.updatedAt,
+      format: examMatrixProfiles.format,
+      version: examMatrixProfiles.version,
+      uaxData: examMatrixProfiles.uaxData,
     })
     .from(examMatrixProfiles)
     .innerJoin(exams, eq(exams.id, examMatrixProfiles.examId))
-    .where(and(eq(exams.ownerId, ownerId), eq(examMatrixProfiles.examId, examId)))
+    .where(and(eq(exams.ownerId, ownerId), eq(examMatrixProfiles.examId, examId), eq(exams.sheetFormat, examMatrixProfiles.format)))
     .limit(1);
-  return profile ?? null;
+  if (!profile) return null;
+  const parsed = matrixProfileInputSchema.safeParse(profile.format === "uax-grid-40" ? {
+    format: profile.format, version: profile.version, tables: profile.uaxData?.tables,
+    rowsPerBlock: profile.rowsPerBlock, blocks: profile.blocks, optionsPerBlock: profile.optionsPerBlock,
+  } : {
+    format: profile.format, version: profile.version, bubbles: profile.bubbles, bubbleRadius: profile.bubbleRadius,
+    rowsPerBlock: profile.rowsPerBlock, blocks: profile.blocks, optionsPerBlock: profile.optionsPerBlock,
+  });
+  return parsed.success ? { ...parsed.data, examId: profile.examId, updatedAt: profile.updatedAt } : null;
 }
 
 export async function saveOwnedMatrixProfile(ownerId: string, examId: string, payload: unknown) {
@@ -34,32 +45,33 @@ export async function saveOwnedMatrixProfile(ownerId: string, examId: string, pa
     if (locked.length === 0) return { status: "not_found" as const };
 
     const [exam] = await tx
-      .select({ numQuestions: exams.numQuestions, numOptions: exams.numOptions })
+      .select({ numQuestions: exams.numQuestions, numOptions: exams.numOptions, sheetFormat: exams.sheetFormat })
       .from(exams)
       .where(and(eq(exams.id, examId), eq(exams.ownerId, ownerId)))
       .limit(1);
 
-    const problems = matrixProfileProblems(parsed.data, exam.numQuestions, exam.numOptions);
+    const problems = matrixProfileProblems(parsed.data, exam.numQuestions, exam.numOptions, exam.sheetFormat);
     if (problems.length > 0) return { status: "invalid" as const, problems };
 
+    const input = parsed.data;
+    const data = {
+      format: input.format ?? "bubbles" as const,
+      version: 1,
+      bubbles: input.format === "uax-grid-40" ? null : input.bubbles,
+      bubbleRadius: input.format === "uax-grid-40" ? null : input.bubbleRadius,
+      uaxData: input.format === "uax-grid-40" ? { tables: input.tables } : null,
+      rowsPerBlock: input.rowsPerBlock, blocks: input.blocks, optionsPerBlock: input.optionsPerBlock,
+    };
     await tx
       .insert(examMatrixProfiles)
       .values({
         examId,
-        bubbles: parsed.data.bubbles,
-        bubbleRadius: parsed.data.bubbleRadius,
-        rowsPerBlock: parsed.data.rowsPerBlock,
-        blocks: parsed.data.blocks,
-        optionsPerBlock: parsed.data.optionsPerBlock,
+        ...data,
       })
       .onConflictDoUpdate({
         target: examMatrixProfiles.examId,
         set: {
-          bubbles: parsed.data.bubbles,
-          bubbleRadius: parsed.data.bubbleRadius,
-          rowsPerBlock: parsed.data.rowsPerBlock,
-          blocks: parsed.data.blocks,
-          optionsPerBlock: parsed.data.optionsPerBlock,
+          ...data,
           updatedAt: new Date(),
         },
       });

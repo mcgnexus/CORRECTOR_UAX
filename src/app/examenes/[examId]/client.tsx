@@ -5,7 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AnswerKeyEditor from "./answer-key-editor";
 import MatrixCalibrator from "./matrix-calibrator";
+import UaxGridCalibrator from "./uax-grid-calibrator";
 import OmrReader from "./omr-reader";
+import type { MatrixProfileInput, SheetFormat } from "@/lib/matrix/profile";
 
 type Exam = {
   id: string;
@@ -13,6 +15,8 @@ type Exam = {
   subject: string | null;
   numQuestions: number;
   numOptions: number;
+  sheetFormat: SheetFormat;
+  structureVersion: number;
   status: "draft" | "key_pending" | "key_validated";
 };
 
@@ -23,14 +27,7 @@ type Answer = {
   editedByTeacher: boolean;
 };
 
-type MatrixProfile = {
-  bubbles: Array<{ questionNo: number; optionIndex: number; x: number; y: number }>;
-  bubbleRadius: number;
-  rowsPerBlock: number;
-  blocks: number;
-  optionsPerBlock: number;
-  updatedAt: string;
-};
+type MatrixProfile = MatrixProfileInput & { updatedAt: string };
 
 type Student = {
   id: string;
@@ -69,6 +66,7 @@ export default function ExamDetalleClient({
   const [guardando, setGuardando] = useState(false);
   const [roster, setRoster] = useState(students);
   const [matrixProfile, setMatrixProfile] = useState(initialMatrixProfile);
+  const [sheetFormat, setSheetFormat] = useState<SheetFormat>(examen.sheetFormat);
   const [rule, setRule] = useState(scoringRule);
   const [examStatus, setExamStatus] = useState(examen.status);
   const [guardandoRegla, setGuardandoRegla] = useState(false);
@@ -138,8 +136,9 @@ export default function ExamDetalleClient({
     const numOptions = Number(datos.numOptions);
     if (
       (numQuestions !== examen.numQuestions || numOptions !== examen.numOptions) &&
-      !window.confirm("Cambiar preguntas u opciones eliminará la clave guardada. ¿Continuar?")
+      !window.confirm("Cambiar preguntas u opciones eliminará la clave y la calibración guardadas. ¿Continuar?")
     ) return;
+    if (sheetFormat !== examen.sheetFormat && !window.confirm("Cambiar el formato eliminará la calibración guardada. La clave se conservará si no cambian preguntas ni opciones. ¿Continuar?")) return;
 
     setGuardando(true);
     const respuesta = await fetch(`/api/exams/${examen.id}`, {
@@ -168,6 +167,12 @@ export default function ExamDetalleClient({
           <input id="title" name="title" defaultValue={examen.title} required maxLength={160} />
           <label htmlFor="subject">Asignatura (opcional)</label>
           <input id="subject" name="subject" defaultValue={examen.subject ?? ""} maxLength={160} />
+          <label htmlFor="sheetFormat">Formato de hoja</label>
+          <select id="sheetFormat" name="sheetFormat" value={sheetFormat} onChange={(event) => setSheetFormat(event.target.value as SheetFormat)}>
+            <option value="bubbles">Burbujas</option>
+            <option value="uax-grid-40">UAX letras 40 × 4 (experimental)</option>
+          </select>
+          {sheetFormat === "uax-grid-40" && <p className="aviso">Este formato requiere 40 preguntas y cuatro opciones. La lectura es experimental y debe revisarse íntegramente.</p>}
           <label htmlFor="numQuestions">Número de preguntas (1–100)</label>
           <input id="numQuestions" name="numQuestions" type="number" min={1} max={100} defaultValue={examen.numQuestions} required />
           <label htmlFor="numOptions">Opciones por pregunta (2–26)</label>
@@ -238,17 +243,22 @@ export default function ExamDetalleClient({
           </div>
         </div>
       </section>
-      <MatrixCalibrator
+      {examen.sheetFormat === "uax-grid-40" ? <UaxGridCalibrator
+        examId={examen.id}
+        initialProfile={matrixProfile?.format === "uax-grid-40" ? matrixProfile : null}
+        onProfileChange={setMatrixProfile}
+      /> : <MatrixCalibrator
         examId={examen.id}
         numQuestions={examen.numQuestions}
         numOptions={examen.numOptions}
-        initialProfile={matrixProfile}
+        initialProfile={matrixProfile && matrixProfile.format !== "uax-grid-40" ? matrixProfile : null}
         onProfileChange={setMatrixProfile}
-      />
+      />}
       <p><Link href="/alumnos">Abrir mi base de alumnos e importar Excel</Link>. Desde allí puedes asignar alumnos a este examen sin repetir la importación.</p>
       <OmrReader
         ownerId={ownerId}
         examId={examen.id}
+        structureVersion={examen.structureVersion}
         numQuestions={examen.numQuestions}
         numOptions={examen.numOptions}
         profile={matrixProfile}

@@ -1,0 +1,1 @@
+ALTER TABLE "exams" ADD COLUMN "structure_version" integer DEFAULT 1 NOT NULL;

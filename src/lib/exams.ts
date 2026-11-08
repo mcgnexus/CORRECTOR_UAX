@@ -1,7 +1,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { answerKeyItems, examResults, examStudents, exams } from "@/db/schema";
-import type { ExamInput } from "@/lib/validation";
+import { answerKeyItems, examMatrixProfiles, examResults, examStudents, exams } from "@/db/schema";
+import { examCreateSchema, type ExamInput } from "@/lib/validation";
 import { isAdminUser } from "@/lib/access";
 
 export async function listAccessibleExams(userId: string) {
@@ -28,52 +28,39 @@ export async function findOwnedExam(ownerId: string, examId: string) {
   return exam;
 }
 
-export async function createOwnedExam(ownerId: string, values: ExamInput) {
+export async function createOwnedExam(ownerId: string, values: Omit<ExamInput, "sheetFormat"> & Partial<Pick<ExamInput, "sheetFormat">>) {
   const [exam] = await getDb()
     .insert(exams)
-    .values({ ...values, ownerId })
+    .values({ ...examCreateSchema.parse(values), ownerId })
     .returning();
   return exam;
 }
 
 export async function updateOwnedExam(ownerId: string, examId: string, values: Partial<ExamInput>) {
-  const db = getDb();
-  const [current] = await db
-    .select({ numQuestions: exams.numQuestions, numOptions: exams.numOptions })
-    .from(exams)
-    .where(and(eq(exams.ownerId, ownerId), eq(exams.id, examId)))
-    .limit(1);
-  if (!current) return { status: "not_found" as const };
-
-  const cambiaEstructura =
-    (values.numQuestions !== undefined && values.numQuestions !== current.numQuestions) ||
-    (values.numOptions !== undefined && values.numOptions !== current.numOptions);
-
-  if (!cambiaEstructura) {
-    const [exam] = await db
-      .update(exams)
-      .set({ ...values, updatedAt: new Date() })
-      .where(and(eq(exams.ownerId, ownerId), eq(exams.id, examId)))
-      .returning();
-    return exam ? { status: "updated" as const, exam } : { status: "not_found" as const };
-  }
-
-  return db.transaction(async (tx) => {
+  return getDb().transaction(async (tx) => {
     const locked = await tx.execute(sql`
       select id from exams where id = ${examId} and owner_id = ${ownerId} for update
     `);
     if (locked.length === 0) return { status: "not_found" as const };
-    const savedResults = await tx
+    const [current] = await tx.select().from(exams).where(eq(exams.id, examId)).limit(1);
+    const parsed = examCreateSchema.safeParse({ ...current, ...values });
+    if (!parsed.success) return { status: "invalid" as const };
+    const dimensionsChanged = parsed.data.numQuestions !== current.numQuestions || parsed.data.numOptions !== current.numOptions;
+    const structureChanged = dimensionsChanged || parsed.data.sheetFormat !== current.sheetFormat;
+    if (structureChanged) {
+      const savedResults = await tx
       .select({ studentId: examResults.studentId })
       .from(examResults)
       .innerJoin(examStudents, eq(examStudents.id, examResults.studentId))
       .where(eq(examStudents.examId, examId))
       .limit(1);
-    if (savedResults.length > 0) return { status: "results_exist" as const };
-    await tx.delete(answerKeyItems).where(eq(answerKeyItems.examId, examId));
+      if (savedResults.length > 0) return { status: "results_exist" as const };
+      await tx.delete(examMatrixProfiles).where(eq(examMatrixProfiles.examId, examId));
+    }
+    if (dimensionsChanged) await tx.delete(answerKeyItems).where(eq(answerKeyItems.examId, examId));
     const [exam] = await tx
       .update(exams)
-      .set({ ...values, status: "draft", updatedAt: new Date() })
+      .set({ ...parsed.data, ...(structureChanged ? { structureVersion: current.structureVersion + 1 } : {}), ...(dimensionsChanged ? { status: "draft" as const } : {}), updatedAt: new Date() })
       .where(and(eq(exams.ownerId, ownerId), eq(exams.id, examId)))
       .returning();
     return exam ? { status: "updated" as const, exam } : { status: "not_found" as const };

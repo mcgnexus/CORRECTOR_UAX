@@ -8,6 +8,7 @@ export type QueuedResult = {
   answers: Array<{ questionNo: number; optionIndex: number | null }>;
   replace: boolean;
   expectedVersion: number | null;
+  expectedStructureVersion?: number;
   idempotencyKey: string;
   createdAt: string;
   status: "pending" | "blocked";
@@ -18,7 +19,7 @@ export type QueuedResult = {
 const DB_NAME = "corrector-uax-offline";
 const DB_VERSION = 1;
 const STORE = "results";
-const ERROR_CODES = new Set(["network", "server", "unauthorized", "key_pending", "exists", "version_conflict", "idempotency_conflict", "rejected"]);
+const ERROR_CODES = new Set(["network", "server", "unauthorized", "key_pending", "exists", "version_conflict", "structure_conflict", "idempotency_conflict", "rejected"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function openQueue(): Promise<IDBDatabase> {
@@ -81,9 +82,10 @@ function transact<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) =
 
 function validateEntry(entry: QueuedResult) {
   const expectedKeys = ["id", "ownerId", "examId", "studentId", "answers", "replace", "expectedVersion", "idempotencyKey", "createdAt", "status", "retries", "lastError"];
-  if (!entry || typeof entry !== "object" || Object.keys(entry).length !== expectedKeys.length || Object.keys(entry).some((key) => !expectedKeys.includes(key))) {
+  if (!entry || typeof entry !== "object" || expectedKeys.some((key) => !(key in entry)) || Object.keys(entry).some((key) => !expectedKeys.includes(key) && key !== "expectedStructureVersion")) {
     throw new Error("La entrega local contiene campos no permitidos.");
   }
+  if (entry.expectedStructureVersion !== undefined && (!Number.isSafeInteger(entry.expectedStructureVersion) || entry.expectedStructureVersion < 1)) throw new Error("Versión estructural inválida.");
   if (![entry.id, entry.ownerId, entry.examId, entry.studentId, entry.idempotencyKey].every((value) => typeof value === "string" && UUID_PATTERN.test(value)) || entry.id !== entry.idempotencyKey) {
     throw new Error("Identificadores de entrega local inválidos.");
   }
@@ -113,7 +115,9 @@ export function saveQueuedResult(entry: QueuedResult): Promise<IDBValidKey> {
 
 export function listQueuedResults(ownerId: string): Promise<QueuedResult[]> {
   if (!ownerId) return Promise.resolve([]);
-  return transact("readonly", (store) => store.index("ownerId").getAll(IDBKeyRange.only(ownerId)));
+  return transact<QueuedResult[]>("readonly", (store) => store.index("ownerId").getAll(IDBKeyRange.only(ownerId))).then((entries) => entries.map((entry) =>
+    Number.isSafeInteger(entry.expectedStructureVersion) && entry.expectedStructureVersion! > 0 ? entry : { ...entry, status: "blocked", lastError: "structure_conflict" },
+  ));
 }
 
 export function deleteQueuedResult(ownerId: string, id: string): Promise<void> {

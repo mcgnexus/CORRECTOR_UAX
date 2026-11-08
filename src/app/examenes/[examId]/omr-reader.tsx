@@ -4,6 +4,9 @@ import Link from "next/link";
 import { MAX_ROSTER_CSV_BYTES, normalizeStudent, normalizeStudentDocument } from "@/lib/exam-roster";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OmrAnswer, OmrProfile, OmrResult } from "@/lib/omr/read";
+import type { UaxGridProfile } from "@/lib/matrix/profile";
+import { detectUaxTables, projectUaxPoint, type UaxTableGeometry } from "@/lib/matrix/uax-grid";
+import type { UaxOmrResult } from "@/lib/omr/read-uax-grid";
 import { detectRegistrationMarkers, markersFromPoints, type MatrixMarker, type Point } from "@/lib/matrix/detect";
 import { applyTonePixels, autoTone, composeCrop, FULL_CROP, isFullCrop, normalizeSelection, type CropRect, type Tone } from "@/lib/omr/retouch";
 import { deleteQueuedResult, listQueuedResults, purgeQueuedResults, saveQueuedResult, type QueuedResult } from "@/lib/offline-queue/indexed-db";
@@ -11,10 +14,11 @@ import { applyQueueDecision, classifyQueueResponse } from "@/lib/offline-queue/q
 
 type Props = {
   examId: string;
+  structureVersion: number;
   ownerId: string;
   numQuestions: number;
   numOptions: number;
-  profile: OmrProfile | null;
+  profile: OmrProfile | UaxGridProfile | null;
   initialStudents: Student[];
   onStudentsChange: (students: Student[] | ((current: Student[]) => Student[])) => void;
   keyValidated: boolean;
@@ -63,7 +67,7 @@ function setStudentIdentity(students: Student[], id: string, identity: { name: s
 }
 
 type PendingSave = { key: string; body: string };
-type SavePayload = { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null };
+type SavePayload = { studentId: string; answers: QueuedResult["answers"]; replace: boolean; expectedVersion: number | null; expectedStructureVersion: number };
 
 function queuedSave(ownerId: string, examId: string, pending: PendingSave, status: QueuedResult["status"], lastError: QueuedResult["lastError"]): QueuedResult {
   return {
@@ -90,7 +94,7 @@ function reviewFromAnswers(answers: Array<{ questionNo: number; optionIndex: num
   }));
 }
 
-export default function OmrReader({ examId, ownerId, numQuestions, numOptions, profile, initialStudents: students, onStudentsChange, keyValidated, onKeyPending }: Props) {
+export default function OmrReader({ examId, ownerId, structureVersion, numQuestions, numOptions, profile, initialStudents: students, onStudentsChange, keyValidated, onKeyPending }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const bitmapRef = useRef<ImageBitmap | null>(null);
@@ -102,7 +106,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<OmrResult | null>(null);
+  const [result, setResult] = useState<OmrResult | UaxOmrResult | null>(null);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [rotation, setRotation] = useState(0);
   const [tone, setTone] = useState<Tone>({ brightness: 0, contrast: 1 });
@@ -114,6 +118,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   const [manualMode, setManualMode] = useState(false);
   const [markerClicks, setMarkerClicks] = useState<Point[]>([]);
   const [detectedMarkers, setDetectedMarkers] = useState<MatrixMarker[] | null>(null);
+  const [detectedTables, setDetectedTables] = useState<UaxTableGeometry[] | null>(null);
   const paintParamsRef = useRef({ angle: 0, crop: FULL_CROP, brightness: 0, contrast: 1 });
   const [profileAtReadStart, setProfileAtReadStart] = useState(profile);
   const [selectedStudentId, setSelectedStudentId] = useState("");
@@ -169,6 +174,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     setManualMode(false);
     setMarkerClicks([]);
     setDetectedMarkers(null);
+    setDetectedTables(null);
     setResult(null);
     setReview(null);
     setReviewHasUnsavedChanges(false);
@@ -187,6 +193,13 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     workerRef.current?.terminate();
     bitmapRef.current?.close();
   }, []);
+
+  useEffect(() => () => {
+    operationRef.current += 1;
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    setBusy(false);
+  }, [profile]);
 
 
   const refreshQueue = useCallback(async () => {
@@ -217,7 +230,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       const response = await fetch(`/api/exams/${entry.examId}/results`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": entry.idempotencyKey, "X-Queue-Owner": ownerId },
-        body: JSON.stringify({ studentId: entry.studentId, answers: entry.answers, replace: entry.replace, expectedVersion: entry.expectedVersion }),
+        body: JSON.stringify({ studentId: entry.studentId, answers: entry.answers, replace: entry.replace, expectedVersion: entry.expectedVersion, expectedStructureVersion: entry.expectedStructureVersion }),
       });
       const responseBody = await response.json().catch(() => ({})) as { code?: string };
       const decision = classifyQueueResponse(response.status, responseBody.code);
@@ -276,6 +289,26 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       const size = Math.max(12, marker.size);
       context.strokeRect(marker.x - size / 2, marker.y - size / 2, size, size);
     }
+    context.restore();
+  }
+
+  function drawTables(tables: UaxTableGeometry[]) {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) return;
+    context.save();
+    context.strokeStyle = "#2a9d8f";
+    context.lineWidth = Math.max(2, canvas.width / 500);
+    tables.forEach((table, index) => {
+      context.beginPath();
+      table.corners.forEach((point, i) => i ? context.lineTo(point.x, point.y) : context.moveTo(point.x, point.y));
+      context.closePath();
+      context.stroke();
+      context.fillStyle = "#1d3557";
+      context.font = `${Math.max(13, canvas.width / 70)}px sans-serif`;
+      const first = projectUaxPoint(table, 0.3, 0.025);
+      context.fillText(index === 0 ? "1 · A" : "21 · A", first.x, first.y);
+    });
     context.restore();
   }
 
@@ -348,11 +381,15 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       previewFrameRef.current = null;
       paint(rotation, crop, draftToneRef.current);
       if (detectedMarkers && !manualMode) drawMarkers(detectedMarkers);
+      if (detectedTables && !manualMode) drawTables(detectedTables);
     });
   }
 
   function renderAndAnalyze(angle: number, settings: Tone, override?: MatrixMarker[], cropOverride?: CropRect, discardConfirmed = false) {
     if (review && !override && !discardConfirmed && !window.confirm("La lectura sustituirá la revisión actual. ¿Descartarla y volver a leer la hoja?")) return;
+    operationRef.current += 1;
+    workerRef.current?.terminate();
+    workerRef.current = null;
     if (previewFrameRef.current !== null) cancelAnimationFrame(previewFrameRef.current);
     previewFrameRef.current = null;
     const painted = paint(angle, cropOverride ?? crop, settings);
@@ -378,6 +415,22 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       const offset = index * 4;
       gray[index] = Math.round(pixels.data[offset] * 0.299 + pixels.data[offset + 1] * 0.587 + pixels.data[offset + 2] * 0.114);
     }
+    if (profile && "format" in profile && profile.format === "uax-grid-40") {
+      const tables = detectUaxTables({ width, height, data: gray });
+      if (!tables) {
+        setDetectedTables(null);
+        setManualMode(true);
+        setMarkerClicks([]);
+        setBusy(false);
+        setError("No se localizaron ambas tablas. Marca sus ocho esquinas en el orden indicado.");
+        return;
+      }
+      setDetectedTables(tables);
+      setManualMode(false);
+      setMarkerClicks([]);
+      startRead(undefined, tables);
+      return;
+    }
     const markers = detectRegistrationMarkers({ width, height, data: gray });
     if (!markers) {
       setDetectedMarkers(null);
@@ -394,7 +447,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     startRead(markers);
   }
 
-  function startRead(markers: MatrixMarker[]) {
+  function startRead(markers?: MatrixMarker[], tables?: UaxTableGeometry[]) {
     setProfileAtReadStart(profile);
     const params = paintParamsRef.current;
     setAnalyzedTone({ brightness: params.brightness, contrast: params.contrast });
@@ -402,7 +455,8 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     const canvas = canvasRef.current;
     const context = painted?.context ?? canvas?.getContext("2d", { willReadFrequently: true });
     if (!canvas || !context || !profile) return;
-    const operation = operationRef.current;
+    workerRef.current?.terminate();
+    const operation = ++operationRef.current;
     setBusy(true);
     setError("");
     setProgress(0);
@@ -410,10 +464,11 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     setReview(null);
     setReviewHasUnsavedChanges(false);
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-    drawMarkers(markers);
+    if (markers) drawMarkers(markers);
+    if (tables) drawTables(tables);
     const worker = new Worker(new URL("@/lib/omr/worker.ts", import.meta.url));
     workerRef.current = worker;
-    worker.onmessage = (event: MessageEvent<{ type: string; value?: number; message?: string; result?: OmrResult }>) => {
+    worker.onmessage = (event: MessageEvent<{ type: string; value?: number; message?: string; result?: OmrResult | UaxOmrResult }>) => {
       if (operation !== operationRef.current) return;
       if (event.data.type === "progress") setProgress(event.data.value ?? 0);
       if (event.data.type === "result" && event.data.result) {
@@ -445,7 +500,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       worker.terminate();
       workerRef.current = null;
     };
-    worker.postMessage({ rgba: imageData.data.buffer, width: canvas.width, height: canvas.height, profile, numQuestions, numOptions, markers }, [imageData.data.buffer]);
+    worker.postMessage({ rgba: imageData.data.buffer, width: canvas.width, height: canvas.height, profile, numQuestions, numOptions, markers, tables }, [imageData.data.buffer]);
   }
 
   async function processFile(file?: File) {
@@ -585,6 +640,9 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     const canvas = canvasRef.current;
     if (!canvas || !imageLoaded) return;
     if (review && !window.confirm("La selección manual sustituirá la revisión actual. ¿Descartarla y marcar la hoja?")) return;
+    operationRef.current += 1;
+    workerRef.current?.terminate();
+    workerRef.current = null;
     if (previewFrameRef.current !== null) cancelAnimationFrame(previewFrameRef.current);
     previewFrameRef.current = null;
     paint(rotation, crop, tone);
@@ -592,6 +650,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     setManualMode(true);
     setMarkerClicks([]);
     setDetectedMarkers(null);
+    setDetectedTables(null);
     setError("");
     setResult(null);
     setReview(null);
@@ -616,6 +675,11 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       context.restore();
     }
     const next = [...markerClicks, { x, y }];
+    if (profile && "format" in profile && profile.format === "uax-grid-40") {
+      setMarkerClicks(next.slice(0, 8));
+      setError("");
+      return;
+    }
     if (next.length < 4) {
       setMarkerClicks(next);
       setError("Marca " + next.length + " de 4 esquinas.");
@@ -633,6 +697,15 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     paintParamsRef.current = { angle: rotation, crop, ...tone };
     drawMarkers(markers);
     startRead(markers);
+  }
+
+  function readManualTables() {
+    if (markerClicks.length !== 8) return;
+    const tables: UaxTableGeometry[] = [0, 4].map((i) => ({ corners: [markerClicks[i], markerClicks[i + 1], markerClicks[i + 2], markerClicks[i + 3]] }));
+    setDetectedTables(tables);
+    setManualMode(false);
+    paintParamsRef.current = { angle: rotation, crop, ...tone };
+    startRead(undefined, tables);
   }
 
   async function createStudent(event: React.FormEvent<HTMLFormElement>) {
@@ -763,6 +836,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       answers: review.map((answer) => ({ questionNo: answer.q, optionIndex: answer.selectedOption })),
       replace: replacing,
       expectedVersion: student?.version ?? null,
+      expectedStructureVersion: structureVersion,
     });
     if (!pendingSaveRef.current || pendingSaveRef.current.body !== body) {
       pendingSaveRef.current = { key: crypto.randomUUID(), body };
@@ -794,7 +868,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
           reset();
           setQueueNotice("Entrega guardada en la cola local. IndexedDB no está cifrada por la aplicación; no cierres sesión en este dispositivo si necesitas sincronizarla.");
         }
-        if (response.status === 409 && ["exists", "version_conflict", "idempotency_conflict"].includes(data.code ?? "")) {
+        if (response.status === 409 && ["exists", "version_conflict", "structure_conflict", "idempotency_conflict"].includes(data.code ?? "")) {
           await saveQueuedResult(queuedSave(ownerId, examId, pendingSaveRef.current, "blocked", data.code as QueuedResult["lastError"]));
           await refreshQueue();
           setQueueNotice("La entrega se guardó en la cola local como conflicto. Compara las respuestas antes de reemplazar.");
@@ -809,7 +883,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
           setStudentError("El examen, alumno o entrega ya no existe. Se descartó la copia local asociada.");
           return;
         }
-        if (response.status < 500 && response.status !== 401 && data.code !== "key_not_validated" && !["exists", "version_conflict", "idempotency_conflict"].includes(data.code ?? "")) {
+        if (response.status < 500 && response.status !== 401 && data.code !== "key_not_validated" && !["exists", "version_conflict", "structure_conflict", "idempotency_conflict"].includes(data.code ?? "")) {
           await saveQueuedResult(queuedSave(ownerId, examId, pendingSaveRef.current, "blocked", "rejected"));
           await refreshQueue();
         }
@@ -934,19 +1008,33 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
     }
   }
 
-  function reopenQueuedForReplacement(entry: QueuedResult, student: Student) {
+  async function reopenQueuedForReplacement(entry: QueuedResult, student: Student) {
     if (student.savedAt && !student.answers) {
       setQueueNotice("La versión del servidor no incluye respuestas comparables. Puedes descartar la cola, pero no se habilita un reemplazo ciego.");
       return;
     }
     const action = student.savedAt ? "reemplazo de la entrega actual" : "nueva entrega para el alumno pendiente";
     if (!window.confirm(`Se abrirán las respuestas locales para revisarlas como ${action}. Confirma todas las preguntas; se usará la versión actual y una clave idempotente nueva.`)) return;
+    try {
+      const response = await fetch(`/api/exams/${examId}`, { cache: "no-store" });
+      const current = await response.json() as { structureVersion?: number };
+      if (!response.ok || current.structureVersion !== structureVersion) {
+        setQueueNotice("La configuración ha cambiado. Recarga el examen antes de revisar la entrega local.");
+        return;
+      }
+    } catch {
+      setQueueNotice("No se pudo comprobar la configuración actual. La entrega sigue guardada localmente.");
+      return;
+    }
     reset();
     queuedReplacementRef.current = entry.id;
     setSelectedStudentId(student.id);
-    setReview(reviewFromAnswers(entry.answers, "guardada", false));
+    setReview(reviewFromAnswers(Array.from({ length: numQuestions }, (_, i) => {
+      const option = entry.answers.find((answer) => answer.questionNo === i + 1)?.optionIndex ?? null;
+      return { questionNo: i + 1, optionIndex: option !== null && option < numOptions ? option : null };
+    }), "guardada", false));
     setReviewHasUnsavedChanges(true);
-    setFeedback("Respuestas pendientes cargadas. Compara con el estado del servidor, confirma cada pregunta y guarda el reemplazo explícitamente.");
+    setFeedback("Respuestas pendientes cargadas con las dimensiones actuales. Las opciones incompatibles se muestran en blanco; compara la entrada original, confirma cada pregunta y guarda explícitamente.");
     window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }
 
@@ -962,6 +1050,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
       key_pending: "Espera a que se valide la clave",
       exists: "El alumno ya tiene una entrega",
       version_conflict: "La entrega cambió en el servidor",
+      structure_conflict: "La configuración cambió o es desconocida; requiere revisión",
       idempotency_conflict: "La clave ya se usó con otros datos",
       rejected: "El servidor rechazó la entrega; requiere revisión",
       conflict: "Conflicto antiguo; compara antes de reemplazar",
@@ -979,6 +1068,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
   return <>
   <section className="tarjeta">
     <h2>Introducir examen del alumno</h2>
+    {profile && "format" in profile && profile.format === "uax-grid-40" && <p className="aviso">Lectura UAX experimental: aún no validada con hojas reales. Comprueba cada respuesta contra la fotografía antes de guardar.</p>}
     <p className="vacio">Usa «Introducir respuestas» en el roster para crear una entrega manual sin fotografía ni calibración. También puedes fotografiar una hoja calibrada. Solo al guardar se envían el alumno y las respuestas revisadas; la foto nunca se sube ni se conserva.</p>
     {disabledReason ? <p className="vacio">{disabledReason} {!profile && <Link href={`/examenes/${examId}#calibracion`}>Ir a calibración</Link>}</p> : <>
       <div className="fila-acciones">
@@ -993,7 +1083,7 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
           ref={canvasRef}
           className="omr-preview"
           hidden={!imageLoaded}
-          aria-label={cropMode ? "Zona de recorte: arrastra para seleccionar el área de la hoja." : "Hoja cargada. Toca el centro de cada cuadrado negro cuando se solicite."}
+          aria-label={cropMode ? "Zona de recorte: arrastra para seleccionar el área de la hoja." : profile && "format" in profile && profile.format === "uax-grid-40" ? "Hoja cargada. Marca las esquinas de las dos tablas cuando se solicite." : "Hoja cargada. Toca el centro de cada cuadrado negro cuando se solicite."}
           onClick={onCanvasClick}
           onPointerDown={onCropPointerDown}
           onPointerMove={onCropPointerMove}
@@ -1026,8 +1116,20 @@ export default function OmrReader({ examId, ownerId, numQuestions, numOptions, p
         <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving || cropMode}>Aplicar ajustes y releer</button>
         {analyzedTone && (tone.brightness !== analyzedTone.brightness || tone.contrast !== analyzedTone.contrast) ? <p className="aviso" role="status">Vista previa modificada; relee para actualizar la detección</p> : null}
       </fieldset>}
-      {manualMode && <p className="vacio" role="status">Toca el centro de cada uno de los cuatro cuadrados negros, en cualquier orden.</p>}
+      {manualMode && <p className="vacio" role="status">{profile && "format" in profile && profile.format === "uax-grid-40" ? "Marca las cuatro esquinas de la tabla izquierda y después las de la derecha, en orden superior izquierda, superior derecha, inferior derecha, inferior izquierda." : "Toca el centro de cada uno de los cuatro cuadrados negros, en cualquier orden."}</p>}
+      {manualMode && profile && "format" in profile && profile.format === "uax-grid-40" && <fieldset>
+        <legend>Esquinas de las tablas</legend>
+        <p>Seleccionadas: {markerClicks.length} de 8. Puedes ajustar las coordenadas con el teclado.</p>
+        {markerClicks.map((point, index) => <div key={index}>
+          <span>{index < 4 ? "Tabla izquierda" : "Tabla derecha"}, {(["superior izquierda", "superior derecha", "inferior derecha", "inferior izquierda"] as const)[index % 4]}: </span>
+          {(["x", "y"] as const).map((axis) => <label key={axis}>{axis.toUpperCase()} <input type="number" aria-label={`Esquina ${index + 1} ${axis.toUpperCase()}`} min={0} value={Math.round(point[axis])} onChange={(event) => setMarkerClicks((points) => points.map((item, i) => i === index ? { ...item, [axis]: Number(event.target.value) } : item))} /></label>)}
+        </div>)}
+        <button type="button" className="secundario" disabled={markerClicks.length >= 8} onClick={() => setMarkerClicks((points) => [...points, { x: Math.round((canvasRef.current?.width ?? 0) / 2), y: Math.round((canvasRef.current?.height ?? 0) / 2) }])}>Añadir esquina con teclado</button>
+        <button type="button" className="secundario" onClick={() => setMarkerClicks([])}>Borrar esquinas</button>
+        <button type="button" disabled={markerClicks.length !== 8} onClick={readManualTables}>Leer con estas esquinas</button>
+      </fieldset>}
       {detectedMarkers && !manualMode && <p className="vacio" role="status">Se han localizado las cuatro marcas de registro.</p>}
+      {detectedTables && !manualMode && <p className="vacio" role="status">Se han localizado las dos tablas. Comprueba que 1 y 21 estén en la tabla correcta.</p>}
       {busy && <p role="status">Procesando localmente… {progress}%</p>}
       {error && <p className="error" role="alert">{error}</p>}
       {review && reviewHasUnsavedChanges && profileAtReadStart !== profile ? <p className="aviso" role="status">La calibración cambió. Se aplicará a la próxima lectura; la revisión actual no se recalcula automáticamente.</p> : null}

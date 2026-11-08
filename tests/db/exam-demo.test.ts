@@ -35,7 +35,7 @@ test("demo privado transaccional: concurrencia, fichas vinculadas, clave manual 
     const key = await db.select().from(answerKeyItems).where(eq(answerKeyItems.examId, examId));
     assert.ok(key.every((item) => item.llmConfidence === null && item.editedByTeacher));
     const pending = roster.find((student) => !student.savedAt)!;
-    const payload = { studentId: pending.id, replace: false, expectedVersion: null,
+    const payload = { studentId: pending.id, replace: false, expectedVersion: null, expectedStructureVersion: 1,
       answers: [0, 1, null, 3].map((optionIndex, index) => ({ questionNo: index + 1, optionIndex })) };
     assert.equal((await saveOwnedReviewedResult(owner.id, examId, payload, randomUUID())).status, "key_not_validated");
     assert.equal((await validateOwnedAnswerKey(other.id, examId)).status, "not_found");

@@ -98,7 +98,7 @@ test("ownership isolation and student, exam, and account cascades", async () => 
     }
 
     const tombstoneKey = randomUUID();
-    const tombstoneRequest = { studentId: studentC.id, answers: [{ questionNo: 1, optionIndex: 0 }, { questionNo: 2, optionIndex: 1 }], replace: false, expectedVersion: null };
+    const tombstoneRequest = { studentId: studentC.id, answers: [{ questionNo: 1, optionIndex: 0 }, { questionNo: 2, optionIndex: 1 }], replace: false, expectedVersion: null, expectedStructureVersion: 1 };
     assert.equal((await saveOwnedReviewedResult(owner.id, exam.id, tombstoneRequest, tombstoneKey)).status, "saved");
     assert.deepEqual(await deleteOwnedReviewedResult(owner.id, exam.id, studentC.id), { status: "deleted" });
     assert.equal((await saveOwnedReviewedResult(owner.id, exam.id, tombstoneRequest, tombstoneKey)).status, "replayed_deleted");

@@ -32,6 +32,7 @@ export default function ExamenesClient({ examenes, ownerId }: { examenes: Exam[]
   const [accountDeleted, setAccountDeleted] = useState(false);
   const [loadingDemo, setLoadingDemo] = useState(false);
   const [demoError, setDemoError] = useState("");
+  const [sheetFormat, setSheetFormat] = useState("bubbles");
   const demoPendingRef = useRef(false);
 
   async function loadDemo() {
@@ -85,6 +86,7 @@ export default function ExamenesClient({ examenes, ownerId }: { examenes: Exam[]
       return;
     }
     formulario.reset();
+    setSheetFormat("bubbles");
     router.refresh();
   }
 
@@ -132,10 +134,15 @@ export default function ExamenesClient({ examenes, ownerId }: { examenes: Exam[]
           <input id="title" name="title" required maxLength={160} placeholder="Parcial 1 — Tema 1-3" />
           <label htmlFor="subject">Asignatura (opcional)</label>
           <input id="subject" name="subject" maxLength={160} placeholder="Gestión y Base de Datos" />
+          <label htmlFor="sheetFormat">Formato de hoja</label>
+          <select id="sheetFormat" name="sheetFormat" value={sheetFormat} onChange={(event) => setSheetFormat(event.target.value)}>
+            <option value="bubbles">Burbujas</option>
+            <option value="uax-grid-40">UAX letras 40 × 4 (experimental)</option>
+          </select>
           <label htmlFor="numQuestions">Número de preguntas (1–100)</label>
-          <input id="numQuestions" name="numQuestions" type="number" min={1} max={100} defaultValue={40} required />
+          <input key={`questions-${sheetFormat}`} id="numQuestions" name="numQuestions" type="number" min={1} max={100} defaultValue={40} readOnly={sheetFormat === "uax-grid-40"} required />
           <label htmlFor="numOptions">Opciones por pregunta (2–26)</label>
-          <input id="numOptions" name="numOptions" type="number" min={2} max={26} defaultValue={4} required />
+          <input key={`options-${sheetFormat}`} id="numOptions" name="numOptions" type="number" min={2} max={26} defaultValue={4} readOnly={sheetFormat === "uax-grid-40"} required />
           {error ? <p className="error" role="alert">{error}</p> : null}
           <div style={{ marginTop: "0.75rem" }}>
             <button type="submit" disabled={enviando}>

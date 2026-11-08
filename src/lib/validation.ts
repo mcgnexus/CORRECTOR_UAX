@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sheetFormatSchema } from "@/lib/matrix/profile";
 
 const normalizedEmail = z
   .string()
@@ -23,13 +24,17 @@ const examFieldsSchema = z.object({
   subject: z.string().trim().max(160).nullish(),
   numQuestions: z.coerce.number().int().min(1).max(100),
   numOptions: z.coerce.number().int().min(2).max(26),
+  sheetFormat: sheetFormatSchema,
 });
 
 export const examCreateSchema = examFieldsSchema
   .extend({
-    subject: z.string().trim().max(160).optional().transform((value) => value || null),
+    subject: z.string().trim().max(160).nullish().transform((value) => value || null),
     numOptions: examFieldsSchema.shape.numOptions.default(4),
+    sheetFormat: sheetFormatSchema.default("bubbles"),
   })
+  .refine((value) => value.sheetFormat !== "uax-grid-40" || (value.numQuestions === 40 && value.numOptions === 4),
+    { message: "UAX requiere exactamente 40 preguntas y cuatro opciones." })
   .transform((value) => ({ ...value, subject: value.subject ?? null }));
 
 export const examUpdateSchema = examFieldsSchema
@@ -39,7 +44,8 @@ export const examUpdateSchema = examFieldsSchema
       value.title !== undefined ||
       value.subject !== undefined ||
       value.numQuestions !== undefined ||
-      value.numOptions !== undefined,
+      value.numOptions !== undefined ||
+      value.sheetFormat !== undefined,
     { message: "Indica al menos un campo que modificar." },
   )
   .transform((value) => {
@@ -48,6 +54,7 @@ export const examUpdateSchema = examFieldsSchema
     if (value.subject !== undefined) cambios.subject = value.subject || null;
     if (value.numQuestions !== undefined) cambios.numQuestions = value.numQuestions;
     if (value.numOptions !== undefined) cambios.numOptions = value.numOptions;
+    if (value.sheetFormat !== undefined) cambios.sheetFormat = value.sheetFormat;
     return cambios;
   });
 

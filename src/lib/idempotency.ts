@@ -14,6 +14,7 @@ export function hashReviewedRequest(value: {
   answers: unknown;
   replace: boolean;
   expectedVersion: number | null;
+  expectedStructureVersion?: number;
 }) {
   const answers = Array.isArray(value.answers)
     ? [...value.answers].sort((a, b) => {

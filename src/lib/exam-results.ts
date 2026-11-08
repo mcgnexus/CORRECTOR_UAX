@@ -152,7 +152,7 @@ export async function deleteOwnedStudent(ownerId: string, examId: string, studen
 export async function saveOwnedReviewedResult(ownerId: string, examId: string, input: unknown, idempotencyKey: string) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { status: "invalid" as const, message: "La lectura no tiene un formato válido." };
   const data = input as Record<string, unknown>;
-  if (Object.keys(data).some((key) => !["studentId", "answers", "replace", "expectedVersion"].includes(key)) || !("expectedVersion" in data)) {
+  if (Object.keys(data).some((key) => !["studentId", "answers", "replace", "expectedVersion", "expectedStructureVersion"].includes(key)) || !("expectedVersion" in data)) {
     return { status: "invalid" as const, message: "La lectura contiene campos no permitidos." };
   }
   if (typeof data.studentId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(data.studentId)) {
@@ -163,16 +163,18 @@ export async function saveOwnedReviewedResult(ownerId: string, examId: string, i
   if (data.expectedVersion !== null && (!Number.isInteger(data.expectedVersion) || (data.expectedVersion as number) < 1)) {
     return { status: "invalid" as const, message: "La versión de la entrega no es válida." };
   }
+  if (data.expectedStructureVersion !== undefined && (!Number.isSafeInteger(data.expectedStructureVersion) || (data.expectedStructureVersion as number) < 1)) return { status: "invalid" as const, message: "La versión de la configuración no es válida." };
 
   return getDb().transaction(async (tx) => {
     const locked = await tx.execute(sql`select id from exams where id = ${examId} and owner_id = ${ownerId} for update`);
     if (locked.length === 0) return { status: "not_found" as const };
-    const [exam] = await tx.select({ status: exams.status, numQuestions: exams.numQuestions, numOptions: exams.numOptions }).from(exams).where(eq(exams.id, examId)).limit(1);
+    const [exam] = await tx.select({ status: exams.status, numQuestions: exams.numQuestions, numOptions: exams.numOptions, structureVersion: exams.structureVersion }).from(exams).where(eq(exams.id, examId)).limit(1);
     const requestHash = hashReviewedRequest({
       studentId,
       answers: data.answers,
       replace: data.replace === true,
       expectedVersion: data.expectedVersion as number | null,
+      ...(data.expectedStructureVersion === undefined ? {} : { expectedStructureVersion: data.expectedStructureVersion as number }),
     });
 
     const [previousRequest] = await tx.select().from(idempotencyKeys).where(and(
@@ -187,6 +189,7 @@ export async function saveOwnedReviewedResult(ownerId: string, examId: string, i
         ? { status: "saved" as const, replayed: true, result: currentResult }
         : { status: "replayed_deleted" as const };
     }
+    if (data.expectedStructureVersion !== exam.structureVersion) return { status: "structure_conflict" as const };
     const validatedAnswers = validateReviewedAnswers(data.answers, exam.numQuestions, exam.numOptions);
     if (!validatedAnswers.success) return { status: "invalid" as const, message: validatedAnswers.message };
     if (exam.status !== "key_validated") return { status: "key_not_validated" as const };

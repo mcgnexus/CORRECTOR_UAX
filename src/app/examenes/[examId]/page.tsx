@@ -32,12 +32,15 @@ export default async function ExamenPage({ params }: { params: Promise<{ examId:
   return (
     <main id="main-content" className="contenedor">
       <ExamDetalleClient
+        key={`${examen.id}-${examen.structureVersion}`}
         examen={{
           id: examen.id,
           title: examen.title,
           subject: examen.subject,
           numQuestions: examen.numQuestions,
           numOptions: examen.numOptions,
+          sheetFormat: examen.sheetFormat,
+          structureVersion: examen.structureVersion,
           status: examen.status,
         }}
         clave={clave.map((item) => ({
@@ -49,11 +52,7 @@ export default async function ExamenPage({ params }: { params: Promise<{ examId:
         matrixProfile={
           matriz
             ? {
-                bubbles: matriz.bubbles,
-                bubbleRadius: matriz.bubbleRadius,
-                rowsPerBlock: matriz.rowsPerBlock,
-                blocks: matriz.blocks,
-                optionsPerBlock: matriz.optionsPerBlock,
+                ...matriz,
                 updatedAt: matriz.updatedAt.toISOString(),
               }
             : null

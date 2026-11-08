@@ -6,7 +6,7 @@ import { readJsonLimited } from "@/lib/http";
 
 type RouteContext = { params: Promise<{ examId: string }> };
 const idSchema = z.string().uuid();
-const MAX_BODY_BYTES = 400_000;
+const MAX_BODY_BYTES = 800_000;
 
 async function ownedExamId(context: RouteContext) {
   const { examId } = await context.params;
