@@ -71,30 +71,90 @@ export function rectifyUaxTable(image: GrayImage, table: UaxTableGeometry): Gray
   return { width: UAX_TABLE_WIDTH, height: UAX_TABLE_HEIGHT, data };
 }
 
-function hasGrid(image: GrayImage) {
-  let maximum = 0;
-  for (const value of image.data) maximum = Math.max(maximum, value);
-  if (maximum < 90) return false;
-  const threshold = maximum * .72;
-  const support = (horizontal: boolean, position: number) => {
-    let count = 0, hits = 0;
+type LatticeFailure = { kind: "horizontal" | "vertical" | "divider"; index: number; support: number; offset: number };
+
+type LatticeAnalysis = {
+  ok: boolean;
+  threshold: number;
+  bright: number;
+  failures: LatticeFailure[];
+  /** Measured phase of each expected line (px), linearly interpolated for cell centers. */
+  horizontalOffsets: number[];
+  verticalOffsets: number[];
+};
+
+/** Contrast judged on the rectified paper itself: midpoint between the ink and
+ * paper percentiles, immune to glare inflating the single brightest pixel. */
+function paperPercentiles(image: GrayImage) {
+  const sample: number[] = [];
+  for (let i = 0; i < image.data.length; i += 7) sample.push(image.data[i]);
+  sample.sort((a, b) => a - b);
+  const at = (p: number) => sample[Math.min(sample.length - 1, Math.max(0, Math.round(p * (sample.length - 1))))];
+  const bright = at(.92), dark = at(.05);
+  return { bright, threshold: Math.round((bright + dark) / 2) };
+}
+
+/** Searches the best phase for each expected line within ±6 px (real photos
+ * drift more than the old fixed ±3 px band) and reports every failing line
+ * with its support so the operator learns WHICH check failed. */
+function analyzeGrid(image: GrayImage): LatticeAnalysis {
+  const { bright, threshold } = paperPercentiles(image);
+  const clampRow = (y: number) => Math.max(0, Math.min(879, y));
+  const clampCol = (x: number) => Math.max(0, Math.min(319, x));
+  const probe = (horizontal: boolean, position: number) => {
+    let best = 0, bestCenter = -1, bestOffset = 0;
     const length = horizontal ? 320 : 880;
-    for (let i = 5; i < length - 5; i += 3) {
-      let dark = false;
-      for (let offset = -3; offset <= 3; offset++) {
-        const x = horizontal ? i : Math.max(0, Math.min(319, position + offset));
-        const y = horizontal ? Math.max(0, Math.min(879, position + offset)) : i;
-        if (image.data[y * 320 + x] < threshold) dark = true;
+    // The wide ±3 band gates line presence; the exact center pixel selects the
+    // phase, so a line drifting 2 px still reports its true offset (ties favor 0).
+    for (let magnitude = 0; magnitude <= 6; magnitude++) for (const offset of magnitude === 0 ? [0] : [magnitude, -magnitude]) {
+      let hits = 0, center = 0, count = 0;
+      for (let i = 5; i < length - 5; i += 3) {
+        let dark = false;
+        for (let d = -3; d <= 3; d++) {
+          const x = horizontal ? i : clampCol(position + offset + d);
+          const y = horizontal ? clampRow(position + offset + d) : i;
+          if (image.data[y * 320 + x] < threshold) { dark = true; break; }
+        }
+        count++; if (dark) hits++;
+        const cx = horizontal ? i : clampCol(position + offset);
+        const cy = horizontal ? clampRow(position + offset) : i;
+        if (image.data[cy * 320 + cx] < threshold) center++;
       }
-      count++; if (dark) hits++;
+      const support = hits / count;
+      if (support > best) { best = support; }
+      if (center / count > bestCenter) { bestCenter = center / count; bestOffset = offset; }
     }
-    return hits / count;
+    return { best, bestOffset };
   };
-  for (let row = 0; row <= 20; row++) if (support(true, Math.min(879, row * 44)) < .86) return false;
-  for (let col = 0; col <= 5; col++) if (support(false, Math.min(319, col * 64)) < .86) return false;
+  const failures: LatticeFailure[] = [];
+  const horizontalOffsets: number[] = [];
+  const verticalOffsets: number[] = [];
+  for (let row = 0; row <= 20; row++) {
+    const { best, bestOffset } = probe(true, Math.min(879, row * 44));
+    horizontalOffsets.push(bestOffset);
+    if (best < .86) failures.push({ kind: "horizontal", index: row, support: best, offset: bestOffset });
+  }
+  for (let col = 0; col <= 5; col++) {
+    const { best, bestOffset } = probe(false, Math.min(319, col * 64));
+    verticalOffsets.push(bestOffset);
+    if (best < .86) failures.push({ kind: "vertical", index: col, support: best, offset: bestOffset });
+  }
   // Reject extra horizontal dividers (for example an included header row).
-  for (let row = 0; row < 20; row++) if (support(true, row * 44 + 22) > .65) return false;
-  return true;
+  for (let row = 0; row < 20; row++) {
+    const { best } = probe(true, Math.min(879, row * 44 + 22));
+    if (best > .65) failures.push({ kind: "divider", index: row, support: best, offset: 0 });
+  }
+  return { ok: failures.length === 0, threshold, bright, failures, horizontalOffsets, verticalOffsets };
+}
+
+function hasGrid(image: GrayImage) {
+  return analyzeGrid(image).ok;
+}
+
+/** Interpolates the measured phase so cell centers follow the same drift as the lattice. */
+function phaseAt(lattice: LatticeAnalysis, horizontal: boolean, cell: number) {
+  const offsets = horizontal ? lattice.verticalOffsets : lattice.horizontalOffsets;
+  return offsets[cell] + (offsets[cell + 1] - offsets[cell]) * .5;
 }
 
 /** Validates real grid structure for BOTH automatic and manual localization. */
@@ -109,8 +169,16 @@ export function validateUaxTables(image: GrayImage, tables: UaxTableGeometry[]):
     throw new Error("Las tablas deben estar separadas y en orden izquierda/derecha.");
   }
   if (Math.abs(centers[0].y - centers[1].y) > Math.max(...widths) * .5
-    || Math.max(...widths) / Math.min(...widths) > 1.5 || rectified.some(t => !hasGrid(t))) {
-    throw new Error("No se valida la estructura de cuadricula 20x5. Ajusta las esquinas o repite la captura.");
+    || Math.max(...widths) / Math.min(...widths) > 1.5) {
+    throw new Error("No se valida la estructura de cuadrícula 20x5: las tablas deben estar a la misma altura y con tamaño parecido. Ajusta las esquinas o repite la captura.");
+  }
+  const worse = rectified.findIndex(t => !hasGrid(t));
+  if (worse >= 0) {
+    const analysis = analyzeGrid(rectified[worse]);
+    const worst = analysis.failures.sort((a, b) => a.support - b.support).slice(0, 3)
+      .map(f => `${f.kind === "horizontal" ? "línea horizontal" : f.kind === "vertical" ? "línea vertical" : "división dentro de la fila"} ${f.index} con soporte ${Math.round(f.support * 100)}% (fase ${f.offset >= 0 ? "+" : ""}${f.offset})`)
+      .join("; ");
+    throw new Error(`No se valida la estructura de cuadrícula 20x5 de la tabla ${worse === 0 ? "izquierda (1-20)" : "derecha (21-40)"}: ${analysis.failures.length ? worst : "papel apenas legible"}. Se exige tinta en el 86% de cada línea, buscando hasta 6 píxeles de desfase. Ajusta las esquinas o repite la captura.`);
   }
   return rectified;
 }
@@ -155,16 +223,17 @@ export function detectUaxTables(image: GrayImage): UaxTableGeometry[] | null {
   try { validateUaxTables(image, candidates); return candidates; } catch { return null; }
 }
 
-function referenceIsBlank(image: GrayImage) {
+function referenceIsBlank(image: GrayImage, lattice: LatticeAnalysis) {
   for (let row = 0; row < 20; row++) for (let col = 1; col < 5; col++) {
     let outside = 0;
-    const cx = (col + .5) * 64, cy = (row + .5) * 44;
+    const cx = (col + .5) * 64 + phaseAt(lattice, true, col);
+    const cy = (row + .5) * 44 + phaseAt(lattice, false, row);
     let background = 0;
     for (let y = cy - 18; y <= cy + 18; y++) for (let x = cx - 26; x <= cx + 26; x++) {
-      background = Math.max(background, image.data[y * 320 + x]);
+      background = Math.max(background, image.data[Math.round(y) * 320 + Math.round(x)]);
     }
     for (let y = cy - 18; y <= cy + 18; y++) for (let x = cx - 26; x <= cx + 26; x++) {
-      if ((Math.abs(x - cx) > 10 || Math.abs(y - cy) > 11) && image.data[y * 320 + x] < background * .75) outside++;
+      if ((Math.abs(x - cx) > 10 || Math.abs(y - cy) > 11) && image.data[Math.round(y) * 320 + Math.round(x)] < background * .75) outside++;
     }
     if (outside > 28) return false;
   }
@@ -172,19 +241,21 @@ function referenceIsBlank(image: GrayImage) {
 }
 
 export function validateUaxReference(image: GrayImage) {
-  if (!hasGrid(image) || !referenceIsBlank(image)) throw new Error("Referencia incompatible: usa una cuadricula UAX en blanco completa.");
+  const lattice = analyzeGrid(image);
+  if (!lattice.ok || !referenceIsBlank(image, lattice)) throw new Error("Referencia incompatible: usa una cuadricula UAX en blanco completa.");
   for (let row = 0; row < 20; row++) for (let col = 0; col < 5; col++) {
-    const cx = (col + .5) * 64, cy = (row + .5) * 44;
-    let ink = 0, background = 0;
-    for (let y = cy - 11; y <= cy + 11; y++) for (let x = cx - 10; x <= cx + 10; x++) background = Math.max(background, image.data[y * 320 + x]);
-    for (let y = cy - 11; y <= cy + 11; y++) for (let x = cx - 10; x <= cx + 10; x++) if (image.data[y * 320 + x] < background * .72) ink++;
-    if (background < 90 || ink < (col === 0 ? 8 : 15) || ink > 300) throw new Error("Referencia incompatible: faltan letras o numeros impresos legibles en las celdas.");
+    const cx = (col + .5) * 64 + phaseAt(lattice, true, col);
+    const cy = (row + .5) * 44 + phaseAt(lattice, false, row);
+    let ink = 0;
+    for (let y = cy - 11; y <= cy + 11; y++) for (let x = cx - 10; x <= cx + 10; x++) if (image.data[Math.round(y) * 320 + Math.round(x)] < lattice.threshold) ink++;
+    if (lattice.bright < 90 || ink < (col === 0 ? 8 : 15) || ink > 300) throw new Error("Referencia incompatible: faltan letras o numeros impresos legibles en las celdas.");
   }
 }
 
 export function calibrateUaxGrid(image: GrayImage, tables: UaxTableGeometry[]): UaxGridProfile {
   const rectified = validateUaxTables(image, tables);
-  if (rectified.some(t => !referenceIsBlank(t))) throw new Error("La referencia debe estar en blanco: se detectan trazos sospechosos. Usa otra hoja y confirma la vista previa.");
+  const lattices = rectified.map(analyzeGrid);
+  if (lattices.some((lattice, i) => !referenceIsBlank(rectified[i], lattice))) throw new Error("La referencia debe estar en blanco: se detectan trazos sospechosos. Usa otra hoja y confirma la vista previa.");
   rectified.forEach(validateUaxReference);
   const references = tables.map((table, index) => {
     let binary = "";

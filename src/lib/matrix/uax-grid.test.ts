@@ -73,3 +73,34 @@ test("UAX detector refuses three complete candidate tables rather than choosing 
   }
   assert.equal(detectUaxTables(image), null);
 });
+
+test("UAX accepts lightly printed real sheets judged by contrast, not by a fixed fraction of the brightest pixel", () => {
+  const { image, tables } = syntheticUax({ printGray: 200 });
+  const profile = calibrateUaxGrid(image, tables);
+  assert.equal(profile.format, "uax-grid-40");
+});
+
+test("UAX tolerates corners marked a few pixels off before the lattice drifts beyond the search window", () => {
+  const { image, tables } = syntheticUax();
+  const moved: typeof tables = [
+    { corners: tables[0].corners.map((p, i) => i >= 2 ? { x: p.x, y: p.y + 5 } : p) as typeof tables[0]["corners"] },
+    tables[1],
+  ];
+  const profile = calibrateUaxGrid(image, moved);
+  assert.equal(profile.format, "uax-grid-40");
+});
+
+test("UAX lattice failure reports which lines failed and their support", () => {
+  const white = { ...syntheticUax().image, data: new Uint8Array(1000 * 1250).fill(255) };
+  assert.throws(() => calibrateUaxGrid(white, syntheticUax().tables), /estructura[\s\S]*(soporte|línea)[\s\S]*%/i);
+});
+
+test("UAX still rejects corners shifted half a cell or badly misaligned tables", () => {
+  const { image, tables } = syntheticUax();
+  const shifted: typeof tables = [
+    { corners: tables[0].corners.map(p => ({ x: p.x, y: p.y + 22 })) as typeof tables[0]["corners"] },
+    tables[1],
+  ];
+  assert.throws(() => calibrateUaxGrid(image, shifted), /estructura|cuadrícula/i);
+  assert.throws(() => calibrateUaxGrid(image, [tables[1], tables[0]]), /orden|izquierda/i);
+});
