@@ -33,7 +33,8 @@ test.beforeAll(async () => {
         const corners=(w,h,left)=>[{x:w*left,y:h*.1},{x:w*(left+.3),y:h*.1},{x:w*(left+.3),y:h*.9},{x:w*left,y:h*.9}];
         export function detectUaxTables(i){return window.manualOnly?null:[{corners:corners(i.width,i.height,.1)},{corners:corners(i.width,i.height,.6)}]}
         export function projectUaxPoint(t,x,y){const [a,b,c,d]=t.corners;return {x:(1-y)*(a.x*(1-x)+b.x*x)+y*(d.x*(1-x)+c.x*x),y:(1-y)*(a.y*(1-x)+b.y*x)+y*(d.y*(1-x)+c.y*x)}}
-        export function calibrateUaxGrid(i,tables){if(tables.length!==2)throw Error('Faltan tablas');return {format:'uax-grid-40',version:1,rowsPerBlock:20,blocks:2,optionsPerBlock:4,tables:tables.map(t=>({corners:t.corners.map(p=>({x:p.x/i.width,y:p.y/i.height})),reference:btoa(String.fromCharCode(255).repeat(320*880))}))}}`, resolveDir: process.cwd() }));
+        export function calibrateUaxGrid(i,tables){if(tables.length!==2)throw Error('Faltan tablas');return {format:'uax-grid-40',version:1,rowsPerBlock:20,blocks:2,optionsPerBlock:4,tables:tables.map(t=>({corners:t.corners.map(p=>({x:p.x/i.width,y:p.y/i.height})),reference:btoa(String.fromCharCode(255).repeat(320*880))}))}}
+        export function locateUaxTablesByTaps(i,taps){if(window.manualOnly)return null;const half=i.width*.16;const quad=c=>({corners:[{x:c.x-half,y:c.y-half*2.75},{x:c.x+half,y:c.y-half*2.75},{x:c.x+half,y:c.y+half*2.75},{x:c.x-half,y:c.y+half*2.75}]});const a=quad(taps[0]),b=quad(taps[1]);return a.corners[0].x<b.corners[0].x?[a,b]:[b,a]}`, resolveDir: process.cwd() }));
     } }],
   });
   script = output.outputFiles[0].text;
@@ -86,6 +87,7 @@ test("confirma referencia, guarda solo tablas y usa updatedAt del servidor", asy
 
 test("fallback de ocho puntos por teclado, ajuste, rotación y cancelar preservan perfil", async ({ page }) => {
   await mount(page); await page.evaluate("window.manualOnly=true"); await upload(page);
+  await page.getByRole("button", { name: "Marcar ocho esquinas" }).click();
   for (let i = 0; i < 8; i++) await page.getByRole("button", { name: "Añadir esquina con teclado" }).click();
   await expect(page.getByLabel("Esquina seleccionada")).toHaveValue("7");
   await page.getByLabel("Coordenada X (píxeles)").fill("55");

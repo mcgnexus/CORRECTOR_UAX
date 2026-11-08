@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { syntheticUax } from "../../../tests/fixtures/uax-grid/synthetic";
-import { calibrateUaxGrid, detectUaxTables, projectUaxPoint, rectifyUaxTable } from "./uax-grid";
+import { calibrateUaxGrid, detectUaxTables, locateUaxTablesByTaps, projectUaxPoint, rectifyUaxTable } from "./uax-grid";
 import { matrixProfileInputSchema } from "./profile";
 
 test("UAX detects two complete grids, ignores header and orders left/right", () => {
@@ -111,4 +111,32 @@ test("UAX still detects a real extra divider line despite the continuity require
     for (let dy = -1; dy <= 1; dy++) image.data[(230 + 3 * 44 + 22 + dy) * image.width + x] = 35;
   }
   assert.throws(() => calibrateUaxGrid(image, tables), /estructura|cuadrícula/i);
+});
+
+test("UAX locates both tables from two rough center taps and orders them left/right", () => {
+  const { image, tables } = syntheticUax();
+  const found = locateUaxTablesByTaps(image, [{ x: 300, y: 620 }, { x: 610, y: 700 }]);
+  assert.ok(found, "debe validar la retícula desde toques burdos");
+  found!.forEach((table, i) => table.corners.forEach((point, j) => {
+    assert.ok(Math.hypot(point.x - tables[i].corners[j].x, point.y - tables[i].corners[j].y) < 4, `${i}/${j}: ${JSON.stringify(point)}`);
+  }));
+  assert.doesNotThrow(() => calibrateUaxGrid(image, found!));
+});
+
+test("UAX tap location survives perspective, rotation and scale transforms", () => {
+  for (const [transform, taps] of [
+    [[.91, -.05, 80, .05, .91, 0, 0, 0], [{ x: 250, y: 700 }, { x: 680, y: 640 }]],
+    [[.75, 0, 30, 0, .75, 20, 0, 0], [{ x: 220, y: 560 }, { x: 560, y: 560 }]],
+  ] as [number[], { x: number; y: number }[]][]) {
+    const { image } = syntheticUax({ transform: transform as [number, number, number, number, number, number, number, number] });
+    const found = locateUaxTablesByTaps(image, [taps[0], taps[1]]);
+    assert.ok(found, JSON.stringify(transform));
+    assert.doesNotThrow(() => calibrateUaxGrid(image, found!), JSON.stringify(transform));
+  }
+});
+
+test("UAX tap location fails closed on blank paper", () => {
+  const { image } = syntheticUax();
+  const white = { ...image, data: new Uint8Array(image.data.length).fill(255) };
+  assert.equal(locateUaxTablesByTaps(white, [{ x: 230, y: 670 }, { x: 670, y: 670 }]), null);
 });

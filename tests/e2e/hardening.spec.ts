@@ -240,7 +240,7 @@ test("synthetic OMR image stays local and only reviewed answers enter IndexedDB 
   await expect(page.locator("canvas.omr-preview")).toBeHidden();
   expect(sentBodies).toHaveLength(1);
   expect(sentBodies[0]).not.toMatch(/File|Blob|multipart|image|synthetic-answer-sheet/);
-  expect(Object.keys(JSON.parse(sentBodies[0])).sort()).toEqual(["answers", "expectedVersion", "replace", "studentId"].sort());
+  expect(Object.keys(JSON.parse(sentBodies[0])).sort()).toEqual(["answers", "expectedStructureVersion", "expectedVersion", "replace", "studentId"].sort());
 
   const localQueue = await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -257,7 +257,7 @@ test("synthetic OMR image stays local and only reviewed answers enter IndexedDB 
     return rows;
   });
   expect(localQueue).toHaveLength(1);
-  expect(Object.keys(localQueue[0]).sort()).toEqual(["answers", "createdAt", "examId", "expectedVersion", "id", "idempotencyKey", "lastError", "ownerId", "replace", "retries", "status", "studentId"].sort());
+  expect(Object.keys(localQueue[0]).sort()).toEqual(["answers", "createdAt", "examId", "expectedStructureVersion", "expectedVersion", "id", "idempotencyKey", "lastError", "ownerId", "replace", "retries", "status", "studentId"].sort());
   expect(localQueue[0].answers).toEqual([{ questionNo: 1, optionIndex: 0 }, { questionNo: 2, optionIndex: 1 }]);
 });
 
@@ -320,7 +320,7 @@ test("calibra la plantilla subida y lee una hoja marcada sin recargar", async ({
 
 test("offline replay survives a reload with identical body and idempotency key, then ACK purges it", async ({ page }) => {
   await signIn(page);
-  const entry = queueEntry(pendingStudentId);
+  const entry = queueEntry(pendingStudentId, { expectedStructureVersion: 1 });
   await addQueueRecord(page, entry);
   const requests: Array<{ key: string | undefined; body: string; contentType: string | undefined }> = [];
   let allowAck = false;
@@ -357,7 +357,7 @@ test("offline replay survives a reload with identical body and idempotency key, 
   expect(firstRequest.contentType).toMatch(/^application\/json/);
   expect(firstRequest.body).not.toMatch(/File|Blob|multipart|image/i);
   const sent = JSON.parse(firstRequest.body) as Record<string, unknown>;
-  expect(Object.keys(sent).sort()).toEqual(["answers", "expectedVersion", "replace", "studentId"].sort());
+  expect(Object.keys(sent).sort()).toEqual(["answers", "expectedStructureVersion", "expectedVersion", "replace", "studentId"].sort());
 });
 
 test("conflicts compare each answer and require explicit versioned replacement with a new key", async ({ page }) => {

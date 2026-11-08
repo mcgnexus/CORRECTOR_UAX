@@ -5,7 +5,7 @@ import { MAX_ROSTER_CSV_BYTES, normalizeStudent, normalizeStudentDocument } from
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OmrAnswer, OmrProfile, OmrResult } from "@/lib/omr/read";
 import type { UaxGridProfile } from "@/lib/matrix/profile";
-import { detectUaxTables, projectUaxPoint, type UaxTableGeometry } from "@/lib/matrix/uax-grid";
+import { detectUaxTables, locateUaxTablesByTaps, projectUaxPoint, type UaxTableGeometry } from "@/lib/matrix/uax-grid";
 import type { UaxOmrResult } from "@/lib/omr/read-uax-grid";
 import { detectRegistrationMarkers, markersFromPoints, type MatrixMarker, type Point } from "@/lib/matrix/detect";
 import { applyTonePixels, autoTone, composeCrop, FULL_CROP, isFullCrop, normalizeSelection, type CropRect, type Tone } from "@/lib/omr/retouch";
@@ -117,6 +117,8 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
   const dragStartRef = useRef<Point | null>(null);
   const [manualMode, setManualMode] = useState(false);
   const [markerClicks, setMarkerClicks] = useState<Point[]>([]);
+  const [tapMode, setTapMode] = useState<"left" | "right" | null>(null);
+  const [tapClicks, setTapClicks] = useState<Point[]>([]);
   const [detectedMarkers, setDetectedMarkers] = useState<MatrixMarker[] | null>(null);
   const [detectedTables, setDetectedTables] = useState<UaxTableGeometry[] | null>(null);
   const paintParamsRef = useRef({ angle: 0, crop: FULL_CROP, brightness: 0, contrast: 1 });
@@ -419,10 +421,11 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
       const tables = detectUaxTables({ width, height, data: gray });
       if (!tables) {
         setDetectedTables(null);
-        setManualMode(true);
+        setManualMode(false);
         setMarkerClicks([]);
+        setTapMode("left");
         setBusy(false);
-        setError("No se localizaron ambas tablas. Marca sus ocho esquinas en el orden indicado.");
+        setError("No se localizaron ambas tablas automáticamente. Toca el centro de la tabla izquierda (1-20) y después el de la derecha (21-40).");
         return;
       }
       setDetectedTables(tables);
@@ -649,6 +652,32 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
     paintParamsRef.current = { angle: rotation, crop, ...tone };
     setManualMode(true);
     setMarkerClicks([]);
+    setTapMode(null);
+    setTapClicks([]);
+    setDetectedMarkers(null);
+    setDetectedTables(null);
+    setError("");
+    setResult(null);
+    setReview(null);
+    setBusy(false);
+    setProgress(0);
+  }
+
+  function startTapMode() {
+    const canvas = canvasRef.current;
+    if (!canvas || !imageLoaded) return;
+    if (review && !window.confirm("La selección por toques sustituirá la revisión actual. ¿Descartarla?")) return;
+    operationRef.current += 1;
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    if (previewFrameRef.current !== null) cancelAnimationFrame(previewFrameRef.current);
+    previewFrameRef.current = null;
+    paint(rotation, crop, tone);
+    paintParamsRef.current = { angle: rotation, crop, ...tone };
+    setManualMode(false);
+    setMarkerClicks([]);
+    setTapMode("left");
+    setTapClicks([]);
     setDetectedMarkers(null);
     setDetectedTables(null);
     setError("");
@@ -659,12 +688,47 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
   }
 
   function onCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
-    if (!manualMode || cropMode) return;
+    const isUax = profile && "format" in profile && profile.format === "uax-grid-40";
+    if ((!manualMode && !(isUax && tapMode)) || cropMode) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
     const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+    if (isUax && tapMode) {
+      const next = [...tapClicks, { x, y }];
+      if (tapMode === "left") {
+        setTapClicks(next);
+        setTapMode("right");
+        setError("");
+        return;
+      }
+      setTapClicks([]);
+      setTapMode(null);
+      setBusy(true);
+      setError("");
+      setTimeout(() => {
+        try {
+          const gray = new Uint8Array(canvas.width * canvas.height);
+          const pixels = canvas.getContext("2d", { willReadFrequently: true })?.getImageData(0, 0, canvas.width, canvas.height).data;
+          if (!pixels) throw new Error("No se pudo leer la imagen para ajustar las tablas.");
+          for (let index = 0; index < gray.length; index++) {
+            const offset = index * 4;
+            gray[index] = Math.round(pixels[offset] * 0.299 + pixels[offset + 1] * 0.587 + pixels[offset + 2] * 0.114);
+          }
+          const found = locateUaxTablesByTaps({ width: canvas.width, height: canvas.height, data: gray }, [next[0], next[1]]);
+          if (!found) throw new Error("No se pudo ajustar la retícula desde los toques. Vuelve a tocar los centros de cada tabla o marca las ocho esquinas.");
+          paintParamsRef.current = { angle: rotation, crop, ...tone };
+          setDetectedTables(found);
+          setManualMode(false);
+          startRead(undefined, found);
+        } catch (cause) {
+          setBusy(false);
+          setError(cause instanceof Error ? cause.message : "Falló el ajuste desde los toques.");
+        }
+      }, 30);
+      return;
+    }
     const context = canvas.getContext("2d");
     if (context) {
       context.save();
@@ -1099,6 +1163,7 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
         <button type="button" className="secundario" onClick={startCrop} disabled={busy || saving || cropMode}>Recortar</button>
         <button type="button" className="secundario" onClick={autoRetouch} disabled={busy || saving || cropMode || manualMode}>Retoque automático</button>
         <button type="button" className="secundario" onClick={startManualMarkers} disabled={busy || saving || cropMode}>Marcar esquinas</button>
+        {profile && "format" in profile && profile.format === "uax-grid-40" && <button type="button" className="secundario" onClick={startTapMode} disabled={busy || saving || cropMode}>Dos toques por tabla</button>}
         <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving || cropMode}>Releer marcas</button>
       </div>}
       {cropMode && <div className="fila-acciones">
@@ -1116,6 +1181,7 @@ export default function OmrReader({ examId, ownerId, structureVersion, numQuesti
         <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving || cropMode}>Aplicar ajustes y releer</button>
         {analyzedTone && (tone.brightness !== analyzedTone.brightness || tone.contrast !== analyzedTone.contrast) ? <p className="aviso" role="status">Vista previa modificada; relee para actualizar la detección</p> : null}
       </fieldset>}
+      {tapMode && <p className="vacio" role="status">Modo dos toques: toca el centro de la tabla {tapMode === "left" ? "izquierda (1-20)" : "derecha (21-40)"}; el ajuste fino es automático.</p>}
       {manualMode && <p className="vacio" role="status">{profile && "format" in profile && profile.format === "uax-grid-40" ? "Marca las cuatro esquinas de la tabla izquierda y después las de la derecha, en orden superior izquierda, superior derecha, inferior derecha, inferior izquierda." : "Toca el centro de cada uno de los cuatro cuadrados negros, en cualquier orden."}</p>}
       {manualMode && profile && "format" in profile && profile.format === "uax-grid-40" && <fieldset>
         <legend>Esquinas de las tablas</legend>

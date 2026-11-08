@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { GrayImage, Point } from "@/lib/matrix/detect";
 import type { UaxGridProfile } from "@/lib/matrix/profile";
-import { calibrateUaxGrid, detectUaxTables, projectUaxPoint, type UaxTableGeometry } from "@/lib/matrix/uax-grid";
+import { calibrateUaxGrid, detectUaxTables, locateUaxTablesByTaps, projectUaxPoint, type UaxTableGeometry } from "@/lib/matrix/uax-grid";
 
 type Profile = UaxGridProfile & { updatedAt: string };
 type Props = {
@@ -78,6 +78,8 @@ function UaxGridCalibratorSession({ examId, initialProfile, onProfileChange }: P
   const [points, setPoints] = useState<Point[]>([]);
   const [selected, setSelected] = useState(0);
   const [manual, setManual] = useState(false);
+  const [tapMode, setTapMode] = useState<"left" | "right" | null>(null);
+  const [taps, setTaps] = useState<Point[]>([]);
   const [draft, setDraft] = useState<UaxGridProfile | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -156,16 +158,42 @@ function UaxGridCalibratorSession({ examId, initialProfile, onProfileChange }: P
     try {
       const tables = detectUaxTables(preview.gray);
       if (!tables || tables.length !== 2) {
-        setManual(true);
-        setMessage("No se localizaron ambas tablas. Marca ocho esquinas: superior izquierda, superior derecha, inferior derecha e inferior izquierda; primero tabla izquierda y después derecha.");
+        setTapMode("left");
+        setMessage("No se localizaron ambas tablas automáticamente. Toca el centro de la tabla izquierda (1-20) y después el de la derecha (21-40); también puedes marcar ocho esquinas.");
         return;
       }
       const next = tables.flatMap(table => table.corners);
       setPoints(next); setManual(false); validate(preview, next);
     } catch (cause) {
-      setManual(true);
-      setError(cause instanceof Error ? cause.message : "Falló la detección. Marca las ocho esquinas manualmente.");
+      setTapMode("left");
+      setError(cause instanceof Error ? cause.message : "Falló la detección. Toca el centro de cada tabla o marca las ocho esquinas.");
     }
+  }
+
+  function handleTap(point: Point) {
+    const next = [...taps, point];
+    if (tapMode === "left") {
+      setTaps(next);
+      setTapMode("right");
+      setMessage("Tabla izquierda marcada. Toca el centro de la tabla derecha (21-40).");
+      return;
+    }
+    setTaps([]);
+    setTapMode(null);
+    setBusy(true);
+    setTimeout(() => {
+      try {
+        const found = locateUaxTablesByTaps(image!.gray, [next[0], next[1]]);
+        if (!found) throw new Error("No se pudo ajustar la retícula desde los toques. Comprueba que cada toque cayó dentro de su tabla e inténtalo de nuevo, o marca las ocho esquinas.");
+        setPoints(found.flatMap(table => table.corners));
+        setSelected(0);
+        validate(image!, found.flatMap(table => table.corners));
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Falló el ajuste desde los toques.");
+      } finally {
+        setBusy(false);
+      }
+    }, 30);
   }
 
   async function load(file?: File) {
@@ -273,8 +301,10 @@ function UaxGridCalibratorSession({ examId, initialProfile, onProfileChange }: P
         <button type="button" className="secundario" disabled={busy || !ready} onClick={() => rotate(-90)}>Girar izquierda</button>
         <button type="button" className="secundario" disabled={busy || !ready} onClick={() => rotate(90)}>Girar derecha</button>
         <button type="button" className="secundario" disabled={busy || !ready} onClick={() => image && detect(image)}>Detectar automáticamente</button>
-        <button type="button" className="secundario" disabled={busy || !ready} onClick={() => { invalidate(); setManual(true); setPoints([]); setSelected(0); }}>Marcar ocho esquinas</button>
+        <button type="button" className="secundario" disabled={busy || !ready} onClick={() => { invalidate(); setManual(false); setPoints([]); setTaps([]); setTapMode("left"); setMessage("Toca el centro de la tabla izquierda (1-20)."); }}>Dos toques por tabla</button>
+        <button type="button" className="secundario" disabled={busy || !ready} onClick={() => { invalidate(); setManual(true); setPoints([]); setSelected(0); setTapMode(null); }}>Marcar ocho esquinas</button>
       </div>
+      {tapMode ? <p role="status">Modo dos toques: toca el centro de la tabla {tapMode === "left" ? "izquierda (1-20)" : "derecha (21-40)"}; el ajuste fino es automático.</p> : null}
       <p id={`${id}-instructions`}>Orden: superior izquierda, superior derecha, inferior derecha, inferior izquierda (TL, TR, BR, BL). Primero tabla izquierda 1-20 y después derecha 21-40. Incluye la columna de números. Toca la imagen para añadir o mover la esquina seleccionada; también puedes usar los controles numéricos o las flechas del teclado (Mayús: 10 píxeles).</p>
       {ready && manual && points.length < 8 ? <p role="status">Siguiente punto {points.length + 1}/8: {pointLabel(points.length)}.</p> : null}
       <canvas ref={canvasRef} className="matriz-lienzo" aria-label="Vista previa UAX" aria-describedby={`${id}-instructions`} tabIndex={ready ? 0 : -1}
@@ -283,7 +313,9 @@ function UaxGridCalibratorSession({ examId, initialProfile, onProfileChange }: P
           if (!ready || busy) return;
           const rect = event.currentTarget.getBoundingClientRect();
           if (!rect.width || !rect.height) return;
-          changePoint(manual && points.length < 8 ? points.length : selected, { x: (event.clientX - rect.left) * event.currentTarget.width / rect.width, y: (event.clientY - rect.top) * event.currentTarget.height / rect.height });
+          const point = { x: (event.clientX - rect.left) * event.currentTarget.width / rect.width, y: (event.clientY - rect.top) * event.currentTarget.height / rect.height };
+          if (tapMode) { invalidate(); handleTap(point); return; }
+          changePoint(manual && points.length < 8 ? points.length : selected, point);
         }}
         onKeyDown={event => {
           if (!selectedPoint || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;

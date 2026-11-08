@@ -51,24 +51,30 @@ export function projectUaxPoint(table: UaxTableGeometry, x: number, y: number): 
   return projection(table)(x, y);
 }
 
-export function rectifyUaxTable(image: GrayImage, table: UaxTableGeometry): GrayImage {
+/** Margin rectified around the canonical 320x880 table for lattice analysis:
+ * edge lines may fall slightly OUTSIDE a hand-marked quad, and a clamp would
+ * make them undiscoverable. 20 px covers the ±19 px search window. */
+export const UAX_GRID_PAD = 20;
+
+export function rectifyUaxTable(image: GrayImage, table: UaxTableGeometry, pad = 0): GrayImage {
   validateImage(image);
   validateQuad(image, table);
   const map = projection(table);
-  const data = new Uint8Array(UAX_TABLE_WIDTH * UAX_TABLE_HEIGHT);
-  for (let y = 0; y < UAX_TABLE_HEIGHT; y++) for (let x = 0; x < UAX_TABLE_WIDTH; x++) {
-    const point = map(x / UAX_TABLE_WIDTH, y / UAX_TABLE_HEIGHT);
+  const width = UAX_TABLE_WIDTH + 2 * pad, height = UAX_TABLE_HEIGHT + 2 * pad;
+  const data = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const point = map((x - pad) / UAX_TABLE_WIDTH, (y - pad) / UAX_TABLE_HEIGHT);
     const px = Math.min(image.width - 1, Math.max(0, point.x));
     const py = Math.min(image.height - 1, Math.max(0, point.y));
     const ix = Math.floor(px), iy = Math.floor(py), fx = px - ix, fy = py - iy;
     const nextX = Math.min(ix + 1, image.width - 1), nextY = Math.min(iy + 1, image.height - 1);
-    data[y * UAX_TABLE_WIDTH + x] = Math.round(
+    data[y * width + x] = Math.round(
       image.data[iy * image.width + ix] * (1 - fx) * (1 - fy)
       + image.data[iy * image.width + nextX] * fx * (1 - fy)
       + image.data[nextY * image.width + ix] * (1 - fx) * fy
       + image.data[nextY * image.width + nextX] * fx * fy);
   }
-  return { width: UAX_TABLE_WIDTH, height: UAX_TABLE_HEIGHT, data };
+  return { width, height, data };
 }
 
 type LatticeFailure = { kind: "horizontal" | "vertical" | "divider"; index: number; support: number; offset: number };
@@ -105,28 +111,29 @@ const LINE_BAND_PX = 3;
 /** Searches the best phase for each expected line within ±10 px (real photos
  * drift more than the old fixed ±3 px band) and reports every failing line
  * with its support so the operator learns WHICH check failed. */
-function analyzeGrid(image: GrayImage): LatticeAnalysis {
+function analyzeGrid(image: GrayImage, pad = 0): LatticeAnalysis {
   const { bright, threshold } = paperPercentiles(image);
-  const clampRow = (y: number) => Math.max(0, Math.min(879, y));
-  const clampCol = (x: number) => Math.max(0, Math.min(319, x));
-  const probe = (horizontal: boolean, position: number) => {
+  const width = image.width, height = image.height;
+  const clampRow = (y: number) => Math.max(0, Math.min(height - 1, y));
+  const clampCol = (x: number) => Math.max(0, Math.min(width - 1, x));
+  const probe = (horizontal: boolean, canonical: number) => {
     let best = 0, bestCenter = -1, bestOffset = 0;
-    const length = horizontal ? 320 : 880;
+    const length = horizontal ? width : height;
     // The wide band gates line presence; the exact center pixel selects the
     // phase, so a line drifting 2 px still reports its true offset (ties favor 0).
     for (let magnitude = 0; magnitude <= LINE_SEARCH_PX; magnitude++) for (const offset of magnitude === 0 ? [0] : [magnitude, -magnitude]) {
       let hits = 0, center = 0, count = 0;
-      for (let i = 5; i < length - 5; i += 3) {
+      for (let i = pad + 5; i < length - pad - 5; i += 3) {
         let dark = false;
         for (let d = -LINE_BAND_PX; d <= LINE_BAND_PX; d++) {
-          const x = horizontal ? i : clampCol(position + offset + d);
-          const y = horizontal ? clampRow(position + offset + d) : i;
-          if (image.data[y * 320 + x] < threshold) { dark = true; break; }
+          const x = horizontal ? i : clampCol(pad + canonical + offset + d);
+          const y = horizontal ? clampRow(pad + canonical + offset + d) : i;
+          if (image.data[y * width + x] < threshold) { dark = true; break; }
         }
         count++; if (dark) hits++;
-        const cx = horizontal ? i : clampCol(position + offset);
-        const cy = horizontal ? clampRow(position + offset) : i;
-        if (image.data[cy * 320 + cx] < threshold) center++;
+        const cx = horizontal ? i : clampCol(pad + canonical + offset);
+        const cy = horizontal ? clampRow(pad + canonical + offset) : i;
+        if (image.data[cy * width + cx] < threshold) center++;
       }
       const support = hits / count;
       if (support > best) { best = support; }
@@ -138,12 +145,12 @@ function analyzeGrid(image: GrayImage): LatticeAnalysis {
   const horizontalOffsets: number[] = [];
   const verticalOffsets: number[] = [];
   for (let row = 0; row <= 20; row++) {
-    const { best, bestOffset } = probe(true, Math.min(879, row * 44));
+    const { best, bestOffset } = probe(true, row * 44);
     horizontalOffsets.push(bestOffset);
     if (best < .86) failures.push({ kind: "horizontal", index: row, support: best, offset: bestOffset });
   }
   for (let col = 0; col <= 5; col++) {
-    const { best, bestOffset } = probe(false, Math.min(319, col * 64));
+    const { best, bestOffset } = probe(false, col * 64);
     verticalOffsets.push(bestOffset);
     if (best < .86) failures.push({ kind: "vertical", index: col, support: best, offset: bestOffset });
   }
@@ -154,31 +161,147 @@ function analyzeGrid(image: GrayImage): LatticeAnalysis {
   // DIVIDER is continuity along the width, so require a long dark run.
   for (let row = 0; row < 20; row++) {
     const phase = (horizontalOffsets[row] + horizontalOffsets[row + 1]) / 2;
-    const position = Math.min(879, row * 44 + 22 + phase);
-    const { best } = probe(true, position);
-    const run = longestHorizontalRun(image.data, threshold, position);
-    if (best > .65 && run > 320 * .5) failures.push({ kind: "divider", index: row, support: best, offset: 0 });
+    const position = clampRow(pad + row * 44 + 22 + phase);
+    const { best } = probe(true, row * 44 + 22 + phase);
+    const run = longestHorizontalRun(image.data, threshold, position, width, height);
+    if (best > .65 && run > (width - 2 * pad) * .5) failures.push({ kind: "divider", index: row, support: best, offset: 0 });
   }
   return { ok: failures.length === 0, threshold, bright, failures, horizontalOffsets, verticalOffsets };
 }
 
-/** Longest dark run along the width at the given canonical row, tolerating
+/** Longest dark run along the width at the given rectified row, tolerating
  * small gaps (anti-aliasing) and a ±LINE_BAND_PX vertical window (slight tilt). */
-function longestHorizontalRun(data: Uint8Array, threshold: number, position: number) {
+function longestHorizontalRun(data: Uint8Array, threshold: number, position: number, width: number, height: number) {
   let longest = 0, run = 0, gap = 0;
-  for (let x = 0; x < 320; x++) {
+  for (let x = 0; x < width; x++) {
     let dark = false;
     for (let d = -LINE_BAND_PX; d <= LINE_BAND_PX; d++) {
-      const y = Math.max(0, Math.min(879, position + d));
-      if (data[y * 320 + x] < threshold) { dark = true; break; }
+      const y = Math.max(0, Math.min(height - 1, position + d));
+      if (data[y * width + x] < threshold) { dark = true; break; }
     }
     if (dark) { run += gap + 1; gap = 0; longest = Math.max(longest, run); } else if (run > 0 && ++gap > 8) { run = 0; gap = 0; }
   }
   return longest;
 }
 
-function hasGrid(image: GrayImage) {
-  return analyzeGrid(image).ok;
+function hasGrid(image: GrayImage, pad = 0) {
+  return analyzeGrid(image, pad).ok;
+}
+
+/** Finds the exact quad for one table starting from a rough center tap.
+ * Dimensional separation makes it robust: vertical-line support depends almost
+ * only on (center.x, width) and horizontal-line support on (center.y, height),
+ * with tilt scanned coarsely and then polished, so each pair is found with its
+ * own fine scan and a joint descent finishes the perspective residuals. */
+const TILTS = [-.105, -.052, 0, .052, .105];
+
+function rotatedQuad(cx: number, cy: number, w: number, h: number, theta: number): UaxTableGeometry {
+  const cos = Math.cos(theta), sin = Math.sin(theta);
+  const dx = w / 2, dy = h / 2;
+  return { corners: [
+    { x: cx + -dx * cos + dy * sin, y: cy + -dx * sin - dy * cos },
+    { x: cx + dx * cos + dy * sin, y: cy + dx * sin - dy * cos },
+    { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos },
+    { x: cx + -dx * cos - dy * sin, y: cy + -dx * sin + dy * cos },
+  ] };
+}
+
+function refineUaxQuad(image: GrayImage, tap: Point): UaxTableGeometry {
+  const threshold = paperPercentiles(image).threshold;
+  const sampleLines = (quad: UaxTableGeometry, horizontal: boolean) => {
+    let hits = 0, count = 0;
+    const points = 30, lines = horizontal ? 21 : 6;
+    try {
+      for (let k = 0; k < lines; k++) for (let i = 0; i <= points; i++) {
+        const f = k / (lines - 1), t = i / points;
+        const p = horizontal ? projectUaxPoint(quad, t, f) : projectUaxPoint(quad, f, t);
+        let dark = false;
+        for (let dy = -2; dy <= 2 && !dark; dy++) for (let dx = -2; dx <= 2; dx++) {
+          const x = Math.max(0, Math.min(image.width - 1, Math.round(p.x) + dx));
+          const y = Math.max(0, Math.min(image.height - 1, Math.round(p.y) + dy));
+          if (image.data[y * image.width + x] < threshold) { dark = true; break; }
+        }
+        count++; if (dark) hits++;
+      }
+    } catch { return 0; }
+    return count ? hits / count : 0;
+  };
+  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+  // Scan (tilt, center.x, width) with vertical lines across a generous span.
+  // The support ridge is narrow (~±5 px in center), so center steps stay at 6.
+  let bestW = clamp(image.width * .3, 150, image.width * .8), bestCx = tap.x, bestTilt = 0, bestV = -1;
+  for (const tilt of TILTS) {
+    for (let w = 150; w <= Math.min(image.width * .8, 700); w += 5) {
+      for (let cx = tap.x - 90; cx <= tap.x + 90; cx += 6) {
+        const quad = rotatedQuad(clamp(cx, 70, image.width - 70), clamp(tap.y, 80, image.height - 80), w, 900, tilt);
+        const score = sampleLines(quad, false);
+        if (score > bestV) { bestV = score; bestW = w; bestTilt = tilt; bestCx = clamp(cx, w / 2 + 1, image.width - w / 2 - 1); }
+      }
+    }
+  }
+  // Scan (center.y, height) with horizontal lines across the found width/tilt.
+  let bestH = bestW * 2.75, bestCy = tap.y, bestHScore = -1;
+  for (let h = bestW * 2; h <= bestW * 3.5; h += 5) {
+    for (let cy = tap.y - 110; cy <= tap.y + 110; cy += 6) {
+      const quad = rotatedQuad(bestCx, clamp(cy, h / 2 + 1, image.height - h / 2 - 1), bestW, h, bestTilt);
+      const score = sampleLines(quad, true);
+      if (score > bestHScore) { bestHScore = score; bestH = h; bestCy = clamp(cy, h / 2 + 1, image.height - h / 2 - 1); }
+    }
+  }
+  let params = { cx: bestCx, cy: bestCy, w: bestW, h: bestH, tilt: bestTilt };
+  let quad = rotatedQuad(params.cx, params.cy, params.w, params.h, params.tilt);
+  let bestScore = sampleLines(quad, true) + sampleLines(quad, false);
+  for (const step of [8, 4, 2, 1]) {
+    for (let sweep = 0; sweep < 2; sweep++) {
+      let improved = false;
+      for (const key of ["cx", "cy", "w", "h"] as const) {
+        for (const direction of [-1, 1]) {
+          const candidate = { ...params, [key]: Math.max(90, params[key] + direction * step) };
+          const candidateQuad = rotatedQuad(candidate.cx, candidate.cy, candidate.w, candidate.h, candidate.tilt);
+          const score = sampleLines(candidateQuad, true) + sampleLines(candidateQuad, false);
+          if (score > bestScore) { bestScore = score; params = candidate; quad = candidateQuad; improved = true; }
+        }
+      }
+      for (const direction of [-1, 1]) {
+        const candidate = { ...params, tilt: params.tilt + direction * .02 };
+        const candidateQuad = rotatedQuad(candidate.cx, candidate.cy, candidate.w, candidate.h, candidate.tilt);
+        const score = sampleLines(candidateQuad, true) + sampleLines(candidateQuad, false);
+        if (score > bestScore) { bestScore = score; params = candidate; quad = candidateQuad; improved = true; }
+      }
+      if (!improved) break;
+    }
+  }
+  // Per-corner polish for perspective residuals.
+  for (const step of [4, 2, 1]) {
+    for (let sweep = 0; sweep < 2; sweep++) {
+      let improved = false;
+      for (let corner = 0; corner < 4; corner++) for (const axis of ["x", "y"] as const) {
+        for (const direction of [-1, 1]) {
+          const candidate: UaxTableGeometry = { corners: [{ ...quad.corners[0] }, { ...quad.corners[1] }, { ...quad.corners[2] }, { ...quad.corners[3] }] };
+          candidate.corners[corner][axis] = clamp(candidate.corners[corner][axis] + direction * step, 1, (axis === "x" ? image.width : image.height) - 2);
+          const score = sampleLines(candidate, true) + sampleLines(candidate, false);
+          if (score > bestScore) { bestScore = score; Object.assign(quad, candidate); improved = true; }
+        }
+      }
+      if (!improved) break;
+    }
+  }
+  return quad;
+}
+
+/** Locates both tables from two rough center taps (one per table, any order):
+ * refines each tap into an exact quad and validates the real grid structure.
+ * Returns null instead of throwing so the UI can offer the manual fallback. */
+export function locateUaxTablesByTaps(image: GrayImage, taps: readonly [Point, Point]): UaxTableGeometry[] | null {
+  validateImage(image);
+  try {
+    const quads = taps.map(tap => refineUaxQuad(image, tap));
+    quads.sort((a, b) => projectUaxPoint(a, .5, .5).x - projectUaxPoint(b, .5, .5).x);
+    validateUaxTables(image, quads);
+    return quads;
+  } catch {
+    return null;
+  }
 }
 
 /** Interpolates the measured phase so cell centers follow the same drift as the lattice. */
@@ -193,6 +316,7 @@ export function validateUaxTables(image: GrayImage, tables: UaxTableGeometry[]):
   if (tables.length !== 2) throw new Error("Se necesitan las dos tablas completas de 20 filas.");
   const centers = tables.map(t => projectUaxPoint(t, .5, .5));
   const rectified = tables.map(t => rectifyUaxTable(image, t));
+  const padded = tables.map(t => rectifyUaxTable(image, t, UAX_GRID_PAD));
   const widths = tables.map(t => Math.hypot(t.corners[1].x - t.corners[0].x, t.corners[1].y - t.corners[0].y));
   if (centers[1].x - centers[0].x < (widths[0] + widths[1]) * .45
     || Math.max(...tables[0].corners.map(p => p.x)) >= Math.min(...tables[1].corners.map(p => p.x))) {
@@ -202,9 +326,9 @@ export function validateUaxTables(image: GrayImage, tables: UaxTableGeometry[]):
     || Math.max(...widths) / Math.min(...widths) > 1.5) {
     throw new Error("No se valida la estructura de cuadrícula 20x5: las tablas deben estar a la misma altura y con tamaño parecido. Ajusta las esquinas o repite la captura.");
   }
-  const worse = rectified.findIndex(t => !hasGrid(t));
+  const worse = padded.findIndex(t => !hasGrid(t, UAX_GRID_PAD));
   if (worse >= 0) {
-    const analysis = analyzeGrid(rectified[worse]);
+    const analysis = analyzeGrid(padded[worse], UAX_GRID_PAD);
     const worst = analysis.failures.sort((a, b) => a.support - b.support).slice(0, 3)
       .map(f => `${f.kind === "horizontal" ? "línea horizontal" : f.kind === "vertical" ? "línea vertical" : "división dentro de la fila"} ${f.index} con soporte ${Math.round(f.support * 100)}% (fase ${f.offset >= 0 ? "+" : ""}${f.offset})`)
       .join("; ");
@@ -243,8 +367,8 @@ export function detectUaxTables(image: GrayImage): UaxTableGeometry[] | null {
     if (count < 3000) continue;
     const table: UaxTableGeometry = { corners: [tl, tr, br, bl] };
     try {
-      const rectified = rectifyUaxTable(image, table);
-      if (hasGrid(rectified)) candidates.push(table);
+      const rectified = rectifyUaxTable(image, table, UAX_GRID_PAD);
+      if (hasGrid(rectified, UAX_GRID_PAD)) candidates.push(table);
     } catch { /* A component is only a proposal, never a validated table. */ }
     if (candidates.length > 2) return null;
   }
@@ -270,8 +394,10 @@ function referenceIsBlank(image: GrayImage, lattice: LatticeAnalysis) {
   return true;
 }
 
-export function validateUaxReference(image: GrayImage) {
-  const lattice = analyzeGrid(image);
+export function validateUaxReference(image: GrayImage, measured?: LatticeAnalysis) {
+  // Phases measured on the PADDED rectification are accurate even at edge rows;
+  // an unpadded measurement would corrupt them once lines drift past the border.
+  const lattice = measured ?? analyzeGrid(image);
   if (!lattice.ok || !referenceIsBlank(image, lattice)) throw new Error("Referencia incompatible: usa una cuadricula UAX en blanco completa.");
   for (let row = 0; row < 20; row++) for (let col = 0; col < 5; col++) {
     const cx = (col + .5) * 64 + phaseAt(lattice, true, col);
@@ -284,9 +410,11 @@ export function validateUaxReference(image: GrayImage) {
 
 export function calibrateUaxGrid(image: GrayImage, tables: UaxTableGeometry[]): UaxGridProfile {
   const rectified = validateUaxTables(image, tables);
-  const lattices = rectified.map(analyzeGrid);
+  // Phases for glyph-aware checks come from the padded rectification: on the
+  // exact-size one, edge rows would report corrupted phases when the quad is off.
+  const lattices = tables.map(t => analyzeGrid(rectifyUaxTable(image, t, UAX_GRID_PAD), UAX_GRID_PAD));
   if (lattices.some((lattice, i) => !referenceIsBlank(rectified[i], lattice))) throw new Error("La referencia debe estar en blanco: se detectan trazos sospechosos. Usa otra hoja y confirma la vista previa.");
-  rectified.forEach(validateUaxReference);
+  rectified.forEach((r, i) => validateUaxReference(r, lattices[i]));
   const references = tables.map((table, index) => {
     let binary = "";
     for (const value of rectified[index].data) binary += String.fromCharCode(value);
