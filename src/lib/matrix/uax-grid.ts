@@ -95,11 +95,12 @@ function paperPercentiles(image: GrayImage) {
 }
 
 /** How far an expected line may sit from its canonical position, plus the
- * thickness band around it: tolerance = LINE_SEARCH_PX + LINE_BAND_PX (13 px). */
-const LINE_SEARCH_PX = 10;
+ * thickness band around it: tolerance = LINE_SEARCH_PX + LINE_BAND_PX (19 px).
+ * Rows sit 44 px apart, so 19 stays clear of the neighbor line (44) and of the
+ * mid-cell divider position (22) that guards against extra printed rows: this
+ * is the widest window that cannot confuse one line with another. */
+const LINE_SEARCH_PX = 16;
 const LINE_BAND_PX = 3;
-/** Grid cells are 44 px tall, so a window up to ±13 px never reaches the neighbor
- * line while still rejecting a divider placed mid-cell (22 px away). */
 
 /** Searches the best phase for each expected line within ±10 px (real photos
  * drift more than the old fixed ±3 px band) and reports every failing line
@@ -147,15 +148,33 @@ function analyzeGrid(image: GrayImage): LatticeAnalysis {
     if (best < .86) failures.push({ kind: "vertical", index: col, support: best, offset: bestOffset });
   }
   // Reject extra horizontal dividers (for example an included header row).
-  // A real divider shares the lattice phase; probing only ±LINE_BAND_PX around
-  // the phase-corrected mid-cell keeps the wide line window from grazing the
-  // neighboring real line when the grid drifts.
+  // A real divider shares the lattice phase, so the probe sits on the
+  // phase-corrected mid-cell; but a printed glyph row lands there too when the
+  // grid drifts, and glyphs light up the per-column support. What identifies a
+  // DIVIDER is continuity along the width, so require a long dark run.
   for (let row = 0; row < 20; row++) {
     const phase = (horizontalOffsets[row] + horizontalOffsets[row + 1]) / 2;
-    const { best } = probe(true, Math.min(879, row * 44 + 22 + phase));
-    if (best > .65) failures.push({ kind: "divider", index: row, support: best, offset: 0 });
+    const position = Math.min(879, row * 44 + 22 + phase);
+    const { best } = probe(true, position);
+    const run = longestHorizontalRun(image.data, threshold, position);
+    if (best > .65 && run > 320 * .5) failures.push({ kind: "divider", index: row, support: best, offset: 0 });
   }
   return { ok: failures.length === 0, threshold, bright, failures, horizontalOffsets, verticalOffsets };
+}
+
+/** Longest dark run along the width at the given canonical row, tolerating
+ * small gaps (anti-aliasing) and a ±LINE_BAND_PX vertical window (slight tilt). */
+function longestHorizontalRun(data: Uint8Array, threshold: number, position: number) {
+  let longest = 0, run = 0, gap = 0;
+  for (let x = 0; x < 320; x++) {
+    let dark = false;
+    for (let d = -LINE_BAND_PX; d <= LINE_BAND_PX; d++) {
+      const y = Math.max(0, Math.min(879, position + d));
+      if (data[y * 320 + x] < threshold) { dark = true; break; }
+    }
+    if (dark) { run += gap + 1; gap = 0; longest = Math.max(longest, run); } else if (run > 0 && ++gap > 8) { run = 0; gap = 0; }
+  }
+  return longest;
 }
 
 function hasGrid(image: GrayImage) {
