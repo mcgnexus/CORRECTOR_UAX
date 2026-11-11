@@ -34,6 +34,12 @@ test("Gemini envía imágenes al endpoint oficial y valida la respuesta", async 
       assert.equal(init?.redirect, "error");
       assert.equal(init?.cache, "no-store");
       const body = JSON.parse(String(init?.body));
+      const schema = body.generationConfig.responseJsonSchema;
+      assert.equal(body.generationConfig.responseMimeType, "application/json");
+      assert.equal(schema.properties.answers.minItems, 40);
+      assert.equal(schema.properties.answers.maxItems, 40);
+      assert.deepEqual(schema.properties.answers.items.required, ["questionNo", "selectedOption", "flag"]);
+      assert.deepEqual(schema.properties.answers.items.properties.flag.enum, ["ok", "blank", "multiple", "faint"]);
       assert.deepEqual(body.contents[0].parts.slice(1), [
         { inlineData: { mimeType: "image/png", data: png.split(",")[1] } },
         { inlineData: { mimeType: "image/jpeg", data: jpeg.split(",")[1] } },

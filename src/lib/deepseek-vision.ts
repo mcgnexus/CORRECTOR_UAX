@@ -89,7 +89,28 @@ export function createGeminiVisionProvider(fetcher: typeof fetch = fetch) {
             const [header, data] = image.split(",");
             return { inlineData: { mimeType: header.slice(5, header.indexOf(";")), data } };
           })] }],
-          generationConfig: { responseMimeType: "application/json", maxOutputTokens: 4096 },
+          generationConfig: {
+            responseMimeType: "application/json",
+            responseJsonSchema: {
+              type: "object",
+              properties: {
+                answers: {
+                  type: "array", minItems: 40, maxItems: 40,
+                  items: {
+                    type: "object",
+                    properties: {
+                      questionNo: { type: "integer", minimum: 1, maximum: 40 },
+                      selectedOption: { type: ["integer", "null"], minimum: 0, maximum: 3, description: "0-3 when flag is ok; null otherwise" },
+                      flag: { type: "string", enum: ["ok", "blank", "multiple", "faint"] },
+                    },
+                    required: ["questionNo", "selectedOption", "flag"], additionalProperties: false,
+                  },
+                },
+              },
+              required: ["answers"], additionalProperties: false,
+            },
+            maxOutputTokens: 4096,
+          },
         }),
         signal: AbortSignal.timeout(150_000), redirect: "error", cache: "no-store",
       });
