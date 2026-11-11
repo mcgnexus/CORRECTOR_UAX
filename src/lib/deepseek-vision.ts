@@ -93,8 +93,8 @@ export function createGeminiVisionProvider(fetcher: typeof fetch = fetch) {
         }),
         signal: AbortSignal.timeout(150_000), redirect: "error", cache: "no-store",
       });
-    } catch {
-      throw new Error("GEMINI_UNAVAILABLE");
+    } catch (error) {
+      throw new Error(error instanceof Error && error.name === "TimeoutError" ? "GEMINI_TIMEOUT" : "GEMINI_UNAVAILABLE");
     }
     if (!response.ok) throw new Error("GEMINI_REQUEST_FAILED");
     try {

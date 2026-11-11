@@ -45,6 +45,8 @@ test("Gemini envía imágenes al endpoint oficial y valida la respuesta", async 
     await assert.rejects(invalid([png, jpeg]), { message: "GEMINI_INVALID_OUTPUT" });
     const failure = createGeminiVisionProvider(async () => { throw new Error("private image or key"); });
     await assert.rejects(failure([png, jpeg]), { message: "GEMINI_UNAVAILABLE" });
+    const timeout = createGeminiVisionProvider(async () => { throw new DOMException("timed out", "TimeoutError"); });
+    await assert.rejects(timeout([png, jpeg]), { message: "GEMINI_TIMEOUT" });
   } finally {
     if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey;
     if (oldModel === undefined) delete process.env.GEMINI_VISION_MODEL; else process.env.GEMINI_VISION_MODEL = oldModel;

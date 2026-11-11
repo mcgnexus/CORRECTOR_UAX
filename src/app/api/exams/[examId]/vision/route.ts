@@ -27,9 +27,13 @@ export async function POST(request: Request, context: { params: Promise<{ examId
   if (input.status !== "ok" || !validateVisionRequest(input.value)) return fail("Solicitud o imágenes no válidas.", 400);
   const isGemini = input.value.provider === "gemini";
   if (!(isGemini ? process.env.GEMINI_API_KEY : process.env.DEEPSEEK_API_KEY)?.trim()) return fail("El servicio de visión no está configurado.", 503);
+  const started = Date.now();
   try {
     return Response.json({ answers: await (isGemini ? geminiVision : deepSeekVision)(input.value.images) }, { headers });
-  } catch {
+  } catch (error) {
+    const allowed = ["GEMINI_TIMEOUT", "GEMINI_UNAVAILABLE", "GEMINI_REQUEST_FAILED", "GEMINI_INVALID_OUTPUT", "DEEPSEEK_UNAVAILABLE", "DEEPSEEK_REQUEST_FAILED", "DEEPSEEK_INVALID_OUTPUT"];
+    const code = error instanceof Error && allowed.includes(error.message) ? error.message : "UNKNOWN";
+    console.error({ event: "vision_provider_error", provider: isGemini ? "gemini" : "deepseek", code, durationMs: Date.now() - started });
     return fail("No se pudo leer la hoja. Revisa todas las respuestas manualmente.", 502);
   }
 }

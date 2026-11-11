@@ -8,6 +8,7 @@ let exam: object | null = { sheetFormat: "uax-grid-40", numQuestions: 40, numOpt
 let ownerRequested = "";
 let calls = 0;
 let geminiCalls = 0;
+let geminiError: string | undefined;
 for (const [name, exports] of [
   ["@/auth", { auth: async () => userId ? { user: { id: userId } } : null }],
   ["@/lib/exams", { findOwnedExam: async (owner: string) => { ownerRequested = owner; return exam; } }],
@@ -15,7 +16,7 @@ for (const [name, exports] of [
     MAX_VISION_BODY_BYTES: 1000,
     validateVisionRequest: (value: unknown) => [undefined, "deepseek", "gemini"].some((provider) => JSON.stringify(value) === JSON.stringify({ consent: true, images: ["first", "second"], ...(provider ? { provider } : {}) })),
     deepSeekVision: async () => { calls++; return [{ questionNo: 1, selectedOption: 0, flag: "ok" }]; },
-    geminiVision: async () => { geminiCalls++; return [{ questionNo: 2, selectedOption: 1, flag: "ok" }]; },
+    geminiVision: async () => { geminiCalls++; if (geminiError) throw new Error(geminiError); return [{ questionNo: 2, selectedOption: 1, flag: "ok" }]; },
   }],
 ] as const) {
   const id = require.resolve(name);
@@ -53,6 +54,31 @@ test("selecciona Gemini explícitamente y comprueba su propia clave", async () =
     assert.equal(geminiCalls, 1);
     assert.equal((await POST(request("otro"), context)).status, 400);
   } finally {
+    if (old === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = old;
+  }
+});
+
+test("registra solo códigos autorizados y duración ante errores del proveedor", async () => {
+  const old = process.env.GEMINI_API_KEY;
+  const previousLog = console.error;
+  const logs: unknown[] = [];
+  process.env.GEMINI_API_KEY = "fake";
+  console.error = (entry: unknown) => { logs.push(entry); };
+  const request = () => new Request("https://app.example/api/exams/id/vision", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ consent: true, images: ["first", "second"], provider: "gemini" }),
+  });
+  try {
+    geminiError = "GEMINI_TIMEOUT";
+    assert.equal((await POST(request(), context)).status, 502);
+    geminiError = "secret image contents";
+    assert.equal((await POST(request(), context)).status, 502);
+    assert.equal((logs[0] as { code: string }).code, "GEMINI_TIMEOUT");
+    assert.equal((logs[1] as { code: string }).code, "UNKNOWN");
+    assert.equal(typeof (logs[0] as { durationMs: number }).durationMs, "number");
+    assert.ok(!JSON.stringify(logs).includes("secret image contents"));
+  } finally {
+    geminiError = undefined;
+    console.error = previousLog;
     if (old === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = old;
   }
 });
