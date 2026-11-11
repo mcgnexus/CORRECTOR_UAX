@@ -27,7 +27,7 @@ test("visión sin calibración mantiene pendientes las respuestas ambiguas y pro
     } }],
   });
   let requests = 0;
-  let payload: { consent: boolean; images: string[] } | undefined;
+  let payload: { consent: boolean; images: string[]; provider: string } | undefined;
   await page.route("**/*", async route => {
     const url = new URL(route.request().url());
     if (url.origin !== "https://vision-reader.test") throw new Error(`Red externa prohibida: ${url.href}`);
@@ -42,7 +42,7 @@ test("visión sin calibración mantiene pendientes las respuestas ambiguas y pro
   });
   await page.goto("https://vision-reader.test/");
   await expect(page.getByText("Primero calibra la matriz de este examen.")).toBeVisible();
-  await page.getByLabel("Método de lectura").selectOption("vision");
+  await page.getByLabel("Método de lectura").selectOption("gemini");
   await expect(page.getByLabel("Elegir imagen")).toBeEnabled();
   const image = await page.evaluate(() => {
     const canvas = document.createElement("canvas"); canvas.width = 800; canvas.height = 1000;
@@ -63,10 +63,10 @@ test("visión sin calibración mantiene pendientes las respuestas ambiguas y pro
   const images = await previews.evaluateAll(nodes => nodes.map(node => (node as HTMLImageElement).src));
   await expect(send).toBeDisabled();
   expect(requests).toBe(0);
-  await page.getByRole("checkbox", { name: /consiento su envío/ }).check();
+  await page.getByRole("checkbox", { name: /consiento su envío a Gemini/ }).check();
   await send.click();
   await expect.poll(() => requests).toBe(1);
-  expect(payload).toEqual({ consent: true, images });
+  expect(payload).toEqual({ consent: true, images, provider: "gemini" });
   const rows = page.locator(".omr-review tbody tr");
   await expect(rows).toHaveCount(40);
   await expect(page.locator(".omr-review tbody button", { hasText: "Confirmar" })).toHaveCount(40);
@@ -86,11 +86,11 @@ test("visión sin calibración mantiene pendientes las respuestas ambiguas y pro
   await rows.nth(1).getByRole("button", { name: "Confirmar" }).click();
   await expect(save).toBeEnabled();
   page.once("dialog", dialog => { expect(dialog.message()).toContain("sustituirá la revisión actual"); void dialog.dismiss(); });
-  await page.getByRole("button", { name: "Seleccionar tablas para DeepSeek" }).click();
+  await page.getByRole("button", { name: "Seleccionar tablas para Gemini" }).click();
   await expect(rows).toHaveCount(40);
   await expect(page.getByLabel("Respuesta final pregunta 1", { exact: true })).toHaveValue("1");
   page.once("dialog", dialog => { expect(dialog.message()).toContain("sustituirá la revisión actual"); void dialog.accept(); });
-  await page.getByRole("button", { name: "Seleccionar tablas para DeepSeek" }).click();
+  await page.getByRole("button", { name: "Seleccionar tablas para Gemini" }).click();
   await expect(rows).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Selecciona las dos tablas" })).toBeVisible();
   expect(requests).toBe(1);

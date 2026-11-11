@@ -111,6 +111,7 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
   const operationRef = useRef(0);
   const [busy, setBusy] = useState(false);
   const [visionMode, setVisionMode] = useState(false);
+  const [visionProvider, setVisionProvider] = useState<"deepseek" | "gemini">("deepseek");
   const [visionCrop, setVisionCrop] = useState(false);
   const visionAbort = useRef<AbortController | null>(null);
   const [progress, setProgress] = useState(0);
@@ -571,6 +572,7 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
   }
 
   async function sendVision(images: [string, string]) {
+    const providerName = visionProvider === "gemini" ? "Gemini" : "DeepSeek";
     const operation = ++operationRef.current;
     const controller = new AbortController();
     visionAbort.current = controller;
@@ -579,20 +581,20 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
     try {
       const response = await fetch(`/api/exams/${examId}/vision`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ consent: true, images }), signal: controller.signal,
+        body: JSON.stringify({ consent: true, images, provider: visionProvider }), signal: controller.signal,
       });
       const data: unknown = await response.json();
       if (operation !== operationRef.current) return;
-      if (!response.ok) throw new Error(typeof data === "object" && data !== null && "error" in data && typeof data.error === "string" ? data.error : "No se pudo analizar la imagen con DeepSeek.");
+      if (!response.ok) throw new Error(typeof data === "object" && data !== null && "error" in data && typeof data.error === "string" ? data.error : `No se pudo analizar la imagen con ${providerName}.`);
       const answers = visionReview(data);
       setReview(answers);
       setReviewHasUnsavedChanges(true);
       setProfileAtReadStart(profile);
       setResult(null);
       setVisionCrop(false);
-      setFeedback("Propuesta experimental de DeepSeek. Comprueba cada respuesta con la imagen y confírmala antes de guardar.");
+      setFeedback(`Propuesta experimental de ${providerName}. Comprueba cada respuesta con la imagen y confírmala antes de guardar.`);
     } catch (cause) {
-      if (operation === operationRef.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : "No se pudo analizar la imagen con DeepSeek.");
+      if (operation === operationRef.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : `No se pudo analizar la imagen con ${providerName}.`);
     } finally {
       if (operation === operationRef.current) { setBusy(false); visionAbort.current = null; }
     }
@@ -1189,9 +1191,9 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
   return <>
   <section className="tarjeta">
     <h2>Introducir examen del alumno</h2>
-    {sheetFormat === "uax-grid-40" && <label>Método de lectura <select value={visionMode ? "vision" : "local"} disabled={busy || saving} onChange={(event) => { if (review && !window.confirm("Cambiar de método descartará la revisión actual. ¿Continuar?")) return; reset(); setVisionMode(event.target.value === "vision"); }}><option value="local">Lectura local (OMR)</option><option value="vision">Visión directa con DeepSeek (experimental)</option></select></label>}
+    {sheetFormat === "uax-grid-40" && <label>Método de lectura <select value={visionMode ? visionProvider : "local"} disabled={busy || saving} onChange={(event) => { if (review && !window.confirm("Cambiar de método descartará la revisión actual. ¿Continuar?")) return; reset(); const value = event.target.value; setVisionMode(value !== "local"); if (value === "deepseek" || value === "gemini") setVisionProvider(value); }}><option value="local">Lectura local (OMR)</option><option value="deepseek">Visión directa con DeepSeek (experimental)</option><option value="gemini">Visión directa con Gemini (experimental)</option></select></label>}
     {profile && "format" in profile && profile.format === "uax-grid-40" && <p className="aviso">Lectura UAX experimental: aún no validada con hojas reales. Comprueba cada respuesta contra la fotografía antes de guardar.</p>}
-    <p className="vacio">Usa «Introducir respuestas» para una entrega manual. La lectura local no sube la foto; si eliges DeepSeek, solo se envían los recortes que confirmes expresamente.</p>
+    <p className="vacio">Usa «Introducir respuestas» para una entrega manual. La lectura local no sube la foto; si eliges visión directa, solo se envían al proveedor seleccionado los recortes que confirmes expresamente.</p>
     {disabledReason ? <p className="vacio">{disabledReason} {!profile && <Link href={`/examenes/${examId}#calibracion`}>Ir a calibración</Link>}</p> : <>
       <div className="fila-acciones">
         <label className="boton" htmlFor="omr-camera" aria-disabled={busy || saving}>Abrir cámara</label>
@@ -1215,11 +1217,11 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
         />
         {cropMode && cropDraft ? <div className="crop-selection" style={{ left: cropDraft.x * 100 + "%", top: cropDraft.y * 100 + "%", width: cropDraft.w * 100 + "%", height: cropDraft.h * 100 + "%" }} /> : null}
       </div>
-      {visionMode && imageLoaded && visionCrop && previewCanvas && <UaxVisionCrop canvas={previewCanvas} busy={busy} onSubmit={(images) => { void sendVision(images); }} onCancel={() => setVisionCrop(false)} />}
+      {visionMode && imageLoaded && visionCrop && previewCanvas && <UaxVisionCrop canvas={previewCanvas} busy={busy} provider={visionProvider === "gemini" ? "Gemini" : "DeepSeek"} onSubmit={(images) => { void sendVision(images); }} onCancel={() => setVisionCrop(false)} />}
       {imageLoaded && <div className="fila-acciones">
         <button type="button" className="secundario" onClick={() => rotateImage(-90)} disabled={busy || saving}>Girar izquierda</button>
         <button type="button" className="secundario" onClick={() => rotateImage(90)} disabled={busy || saving}>Girar derecha</button>
-        {visionMode && <button type="button" className="secundario" onClick={() => { if (review && !window.confirm("Una nueva lectura sustituirá la revisión actual. ¿Descartarla?")) return; setReview(null); setReviewHasUnsavedChanges(false); setVisionCrop(true); }} disabled={busy || saving}>Seleccionar tablas para DeepSeek</button>}
+        {visionMode && <button type="button" className="secundario" onClick={() => { if (review && !window.confirm("Una nueva lectura sustituirá la revisión actual. ¿Descartarla?")) return; setReview(null); setReviewHasUnsavedChanges(false); setVisionCrop(true); }} disabled={busy || saving}>Seleccionar tablas para {visionProvider === "gemini" ? "Gemini" : "DeepSeek"}</button>}
         {!visionMode && <button type="button" className="secundario" onClick={startCrop} disabled={busy || saving || cropMode}>Recortar</button>}
         {!visionMode && <button type="button" className="secundario" onClick={autoRetouch} disabled={busy || saving || cropMode || manualMode}>Retoque automático</button>}
         {!visionMode && <button type="button" className="secundario" onClick={startManualMarkers} disabled={busy || saving || cropMode}>Marcar esquinas</button>}
@@ -1292,7 +1294,7 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
             Confirmar todas las respuestas
           </button>
         </div>
-        <p className="vacio">Confirma cada pregunta o todas a la vez, incluidos los blancos. Las marcas dudosas o múltiples de DeepSeek requieren elegir expresamente una respuesta o blanco. La detección es provisional; la nota se calcula al guardar y no se guarda la imagen.</p>
+        <p className="vacio">Confirma cada pregunta o todas a la vez, incluidos los blancos. Las marcas dudosas o múltiples requieren elegir expresamente una respuesta o blanco. La detección es provisional; la nota se calcula al guardar y no se guarda la imagen.</p>
         {studentError && <p className="error" role="alert">{studentError}</p>}
         {!keyValidated || !selectedStudentId || review.some((answer) => !answer.confirmed) ? <p className="vacio" role="status">
           {!keyValidated

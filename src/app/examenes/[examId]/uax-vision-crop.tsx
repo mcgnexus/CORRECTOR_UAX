@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState, type PointerEvent } from "react";
 
-type Props = { canvas: HTMLCanvasElement; busy: boolean; onSubmit: (images: [string, string]) => void; onCancel: () => void };
+type Props = { canvas: HTMLCanvasElement; busy: boolean; provider?: "DeepSeek" | "Gemini"; onSubmit: (images: [string, string]) => void; onCancel: () => void };
 type Rect = { x: number; y: number; width: number; height: number };
 type Fields = { x: string; y: string; width: string; height: string };
 const empty = (): Fields => ({ x: "", y: "", width: "", height: "" });
@@ -23,7 +23,7 @@ export default function UaxVisionCrop(props: Props) {
   return <CropSession key={version} {...props} />;
 }
 
-function CropSession({ canvas, busy, onSubmit, onCancel }: Props) {
+function CropSession({ canvas, busy, provider = "DeepSeek", onSubmit, onCancel }: Props) {
   const id = useId();
   const display = useRef<HTMLCanvasElement>(null);
   const drag = useRef<{ x: number; y: number; index: number } | null>(null);
@@ -72,7 +72,7 @@ function CropSession({ canvas, busy, onSubmit, onCancel }: Props) {
     } catch (e) { setError(e instanceof Error ? e.message : "No se pudieron preparar los recortes."); }
   }
 
-  return <section aria-label="Recorte manual para DeepSeek" style={{ display: "grid", gap: 16, maxWidth: 900 }}>
+  return <section aria-label={`Recorte manual para ${provider}`} style={{ display: "grid", gap: 16, maxWidth: 900 }}>
     <div><h3>Selecciona las dos tablas</h3><p>Elige cada tabla y arrastra sobre la imagen, o introduce sus coordenadas en píxeles. No incluyas la cabecera ni datos personales.</p></div>
     <div role="group" aria-label="Tabla a seleccionar" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
       {labels.map((label, i) => <button type="button" key={label} disabled={busy} aria-pressed={active === i} onClick={() => setActive(i)}>{label}</button>)}
@@ -96,8 +96,8 @@ function CropSession({ canvas, busy, onSubmit, onCancel }: Props) {
     {preview && <div><h4>Vista previa exacta de lo que se enviará</h4><div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>{preview.map ( (image, i) => <figure key={labels[i]} style={{ margin: 0, flex: "1 1 200px", minWidth: 0 }}><figcaption>{labels[i]}</figcaption>{/* Local data URLs must not pass through an image optimization service. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={image} alt={`Recorte ${labels[i]}`} style={{ display: "block", maxWidth: "100%", maxHeight: 400, objectFit: "contain" }} /></figure>)}</div>
-      <p>La información dentro de los recortes no está anonimizada. Se enviará al proveedor DeepSeek y su procesamiento puede generar costes. Comprueba que no aparecen la cabecera, el DNI u otros datos personales.</p>
-      <label><input type="checkbox" checked={confirmed} disabled={busy} onChange={event => setConfirmed(event.target.checked)} /> He revisado ambos recortes y consiento su envío a DeepSeek.</label>
+      <p>La información dentro de los recortes no está anonimizada. Se enviará al proveedor {provider} y su procesamiento puede generar costes. Comprueba que no aparecen la cabecera, el DNI u otros datos personales.</p>
+      <label><input type="checkbox" checked={confirmed} disabled={busy} onChange={event => setConfirmed(event.target.checked)} /> He revisado ambos recortes y consiento su envío a {provider}.</label>
     </div>}
     <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}><button type="button" disabled={busy || !preview || !confirmed} onClick={() => { if (!preview || !confirmed || busy) return; setConfirmed(false); onSubmit(preview); }}>Enviar recortes</button><button type="button" disabled={busy} onClick={onCancel}>Cancelar</button></div>
   </section>;

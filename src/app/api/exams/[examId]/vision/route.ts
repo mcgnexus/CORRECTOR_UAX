@@ -2,7 +2,7 @@ import { z } from "zod";
 import { auth } from "@/auth";
 import { findOwnedExam } from "@/lib/exams";
 import { readJsonLimited } from "@/lib/http";
-import { deepSeekVision, MAX_VISION_BODY_BYTES, validateVisionRequest } from "@/lib/deepseek-vision";
+import { deepSeekVision, geminiVision, MAX_VISION_BODY_BYTES, validateVisionRequest } from "@/lib/deepseek-vision";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,9 +25,10 @@ export async function POST(request: Request, context: { params: Promise<{ examId
   const input = await readJsonLimited(request, MAX_VISION_BODY_BYTES);
   if (input.status === "too_large") return fail("Las imágenes superan el límite de tamaño.", 413);
   if (input.status !== "ok" || !validateVisionRequest(input.value)) return fail("Solicitud o imágenes no válidas.", 400);
-  if (!process.env.DEEPSEEK_API_KEY?.trim()) return fail("El servicio de visión no está configurado.", 503);
+  const isGemini = input.value.provider === "gemini";
+  if (!(isGemini ? process.env.GEMINI_API_KEY : process.env.DEEPSEEK_API_KEY)?.trim()) return fail("El servicio de visión no está configurado.", 503);
   try {
-    return Response.json({ answers: await deepSeekVision(input.value.images) }, { headers });
+    return Response.json({ answers: await (isGemini ? geminiVision : deepSeekVision)(input.value.images) }, { headers });
   } catch {
     return fail("No se pudo leer la hoja. Revisa todas las respuestas manualmente.", 502);
   }

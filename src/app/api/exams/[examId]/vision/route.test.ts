@@ -7,13 +7,15 @@ let userId: string | undefined = "user-1";
 let exam: object | null = { sheetFormat: "uax-grid-40", numQuestions: 40, numOptions: 4 };
 let ownerRequested = "";
 let calls = 0;
+let geminiCalls = 0;
 for (const [name, exports] of [
   ["@/auth", { auth: async () => userId ? { user: { id: userId } } : null }],
   ["@/lib/exams", { findOwnedExam: async (owner: string) => { ownerRequested = owner; return exam; } }],
   ["@/lib/deepseek-vision", {
     MAX_VISION_BODY_BYTES: 1000,
-    validateVisionRequest: (value: unknown) => JSON.stringify(value) === JSON.stringify({ consent: true, images: ["first", "second"] }),
+    validateVisionRequest: (value: unknown) => [undefined, "deepseek", "gemini"].some((provider) => JSON.stringify(value) === JSON.stringify({ consent: true, images: ["first", "second"], ...(provider ? { provider } : {}) })),
     deepSeekVision: async () => { calls++; return [{ questionNo: 1, selectedOption: 0, flag: "ok" }]; },
+    geminiVision: async () => { geminiCalls++; return [{ questionNo: 2, selectedOption: 1, flag: "ok" }]; },
   }],
 ] as const) {
   const id = require.resolve(name);
@@ -29,6 +31,26 @@ test("rechaza peticiones entre sitios antes de autenticar", async () => {
   }), context);
   assert.equal(response.status, 403);
   assert.equal(response.headers.get("cache-control"), "no-store");
+});
+
+test("selecciona Gemini explícitamente y comprueba su propia clave", async () => {
+  const old = process.env.GEMINI_API_KEY;
+  const request = (provider: string) => new Request("https://app.example/api/exams/id/vision", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ consent: true, images: ["first", "second"], provider }),
+  });
+  try {
+    delete process.env.GEMINI_API_KEY;
+    assert.equal((await POST(request("gemini"), context)).status, 503);
+    assert.equal(geminiCalls, 0);
+    process.env.GEMINI_API_KEY = "fake";
+    const response = await POST(request("gemini"), context);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { answers: [{ questionNo: 2, selectedOption: 1, flag: "ok" }] });
+    assert.equal(geminiCalls, 1);
+    assert.equal((await POST(request("otro"), context)).status, 400);
+  } finally {
+    if (old === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = old;
+  }
 });
 
 test("rechaza formularios que podrían eludir CORS", async () => {
