@@ -51,6 +51,25 @@ test("Gemini envía imágenes al endpoint oficial y valida la respuesta", async 
   }
 });
 
+test("Gemini usa un modelo disponible por defecto", async () => {
+  const oldKey = process.env.GEMINI_API_KEY;
+  const oldModel = process.env.GEMINI_VISION_MODEL;
+  process.env.GEMINI_API_KEY = "fake-secret";
+  delete process.env.GEMINI_VISION_MODEL;
+  try {
+    let requestedUrl = "";
+    const provider = createGeminiVisionProvider(async (url) => {
+      requestedUrl = String(url);
+      return Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify({ answers }) }] } }] });
+    });
+    await provider([png, jpeg]);
+    assert.equal(requestedUrl, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent");
+  } finally {
+    if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey;
+    if (oldModel === undefined) delete process.env.GEMINI_VISION_MODEL; else process.env.GEMINI_VISION_MODEL = oldModel;
+  }
+});
+
 test("exige cuarenta respuestas inequívocas y coherentes", () => {
   assert.deepEqual(parseVisionAnswers(JSON.stringify({ answers })), answers);
   for (const invalid of [

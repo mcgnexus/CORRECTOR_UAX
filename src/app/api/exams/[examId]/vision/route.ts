@@ -6,7 +6,7 @@ import { deepSeekVision, geminiVision, MAX_VISION_BODY_BYTES, validateVisionRequ
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 180;
 
 export async function POST(request: Request, context: { params: Promise<{ examId: string }> }) {
   const headers = { "Cache-Control": "no-store" };

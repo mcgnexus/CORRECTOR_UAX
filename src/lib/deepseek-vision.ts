@@ -54,7 +54,7 @@ export function createDeepSeekVisionProvider(fetcher: typeof fetch = fetch) {
           ],
           response_format: { type: "json_object" }, max_tokens: 4096, stream: false,
         }),
-        signal: AbortSignal.timeout(60_000), redirect: "error", cache: "no-store",
+        signal: AbortSignal.timeout(150_000), redirect: "error", cache: "no-store",
       });
     } catch {
       throw new Error("DEEPSEEK_UNAVAILABLE");
@@ -77,7 +77,7 @@ export function createGeminiVisionProvider(fetcher: typeof fetch = fetch) {
   return async (images: [string, string]): Promise<VisionAnswer[]> => {
     const key = process.env.GEMINI_API_KEY?.trim();
     if (!key) throw new Error("GEMINI_API_KEY_MISSING");
-    const model = process.env.GEMINI_VISION_MODEL?.trim() || "gemini-2.5-flash";
+    const model = process.env.GEMINI_VISION_MODEL?.trim() || "gemini-3.8-flash";
     let response: Response;
     try {
       response = await fetcher(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
@@ -91,7 +91,7 @@ export function createGeminiVisionProvider(fetcher: typeof fetch = fetch) {
           })] }],
           generationConfig: { responseMimeType: "application/json", maxOutputTokens: 4096 },
         }),
-        signal: AbortSignal.timeout(60_000), redirect: "error", cache: "no-store",
+        signal: AbortSignal.timeout(150_000), redirect: "error", cache: "no-store",
       });
     } catch {
       throw new Error("GEMINI_UNAVAILABLE");

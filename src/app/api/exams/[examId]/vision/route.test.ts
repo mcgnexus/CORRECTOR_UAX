@@ -21,9 +21,13 @@ for (const [name, exports] of [
   const id = require.resolve(name);
   require.cache[id] = { id, filename: id, loaded: true, exports, children: [], paths: [] } as unknown as NodeModule;
 }
-const { POST } = require("./route") as typeof import("./route");
+const { POST, maxDuration } = require("./route") as typeof import("./route");
 
 const context = { params: Promise.resolve({ examId: "a2c15cf3-44f9-4ed0-9a6c-b32235e0402b" }) };
+
+test("permite más de 60 segundos para la lectura visual", () => {
+  assert.equal(maxDuration, 180);
+});
 
 test("rechaza peticiones entre sitios antes de autenticar", async () => {
   const response = await POST(new Request("https://app.example/api/exams/id/vision", {

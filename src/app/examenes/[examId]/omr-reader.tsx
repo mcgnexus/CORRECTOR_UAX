@@ -583,7 +583,9 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ consent: true, images, provider: visionProvider }), signal: controller.signal,
       });
-      const data: unknown = await response.json();
+      const data: unknown = await response.json().catch(() => {
+        throw new Error(`No se pudo analizar la imagen con ${providerName}.`);
+      });
       if (operation !== operationRef.current) return;
       if (!response.ok) throw new Error(typeof data === "object" && data !== null && "error" in data && typeof data.error === "string" ? data.error : `No se pudo analizar la imagen con ${providerName}.`);
       const answers = visionReview(data);

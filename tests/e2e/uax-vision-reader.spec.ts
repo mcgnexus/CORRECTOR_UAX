@@ -36,6 +36,8 @@ test("visión sin calibración mantiene pendientes las respuestas ambiguas y pro
     if (url.pathname === "/api/exams/test-exam/vision" && route.request().method() === "POST") {
       requests++;
       payload = route.request().postDataJSON();
+      if (requests === 1) return route.fulfill({ status: 504, contentType: "text/plain", body: "Gateway Timeout" });
+      if (requests === 2) return route.fulfill({ status: 400, json: { error: "Error de visión de prueba" } });
       return route.fulfill({ json: { answers: Array.from({ length: 40 }, (_, i) => ({ questionNo: i + 1, selectedOption: i < 2 ? null : 0, flag: i === 0 ? "multiple" : i === 1 ? "faint" : "ok" })) } });
     }
     throw new Error(`Petición inesperada: ${route.request().method()} ${url.pathname}`);
@@ -66,6 +68,14 @@ test("visión sin calibración mantiene pendientes las respuestas ambiguas y pro
   await page.getByRole("checkbox", { name: /consiento su envío a Gemini/ }).check();
   await send.click();
   await expect.poll(() => requests).toBe(1);
+  await expect(page.getByRole("alert")).toContainText("No se pudo analizar la imagen con Gemini.");
+  await expect(page.getByRole("alert")).not.toContainText("SyntaxError");
+  await page.getByRole("checkbox", { name: /consiento su envío a Gemini/ }).check();
+  await send.click();
+  await expect(page.getByRole("alert")).toContainText("Error de visión de prueba");
+  await page.getByRole("checkbox", { name: /consiento su envío a Gemini/ }).check();
+  await send.click();
+  await expect.poll(() => requests).toBe(3);
   expect(payload).toEqual({ consent: true, images, provider: "gemini" });
   const rows = page.locator(".omr-review tbody tr");
   await expect(rows).toHaveCount(40);
@@ -93,5 +103,5 @@ test("visión sin calibración mantiene pendientes las respuestas ambiguas y pro
   await page.getByRole("button", { name: "Seleccionar tablas para Gemini" }).click();
   await expect(rows).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Selecciona las dos tablas" })).toBeVisible();
-  expect(requests).toBe(1);
+  expect(requests).toBe(3);
 });
