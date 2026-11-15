@@ -2,11 +2,10 @@
 
 import { useEffect, useId, useRef, useState, type PointerEvent } from "react";
 
-type Props = { canvas: HTMLCanvasElement; busy: boolean; provider?: "DeepSeek" | "Gemini"; onSubmit: (images: [string, string]) => void; onCancel: () => void };
+type Props = { canvas: HTMLCanvasElement; busy: boolean; numQuestions: number; provider?: "DeepSeek" | "Gemini"; onSubmit: (images: [string, string]) => void; onCancel: () => void };
 type Rect = { x: number; y: number; width: number; height: number };
 type Fields = { x: string; y: string; width: string; height: string };
 const empty = (): Fields => ({ x: "", y: "", width: "", height: "" });
-const labels = ["Tabla izquierda (1-20)", "Tabla derecha (21-40)"] as const;
 const maxBytes = 2 * 1024 * 1024;
 
 function valid(r: Rect, canvas: HTMLCanvasElement) {
@@ -23,8 +22,13 @@ export default function UaxVisionCrop(props: Props) {
   return <CropSession key={version} {...props} />;
 }
 
-function CropSession({ canvas, busy, provider = "DeepSeek", onSubmit, onCancel }: Props) {
+function CropSession({ canvas, busy, numQuestions, provider = "DeepSeek", onSubmit, onCancel }: Props) {
   const id = useId();
+  const split = Math.ceil(numQuestions / 2);
+  const labels = [
+    `Tabla izquierda (1-${split})`,
+    numQuestions > split ? `Tabla derecha (${split + 1}-${numQuestions})` : "Tabla derecha (sin preguntas)",
+  ] as const;
   const display = useRef<HTMLCanvasElement>(null);
   const drag = useRef<{ x: number; y: number; index: number } | null>(null);
   const [active, setActive] = useState(0);
@@ -53,7 +57,7 @@ function CropSession({ canvas, busy, provider = "DeepSeek", onSubmit, onCancel }
     setConfirmed(false); setPreview(null);
     const [left, right] = rects;
     if (!left || !right || !valid(left, canvas) || !valid(right, canvas)) { setError("Selecciona las dos tablas con rectángulos válidos dentro de la imagen."); return; }
-    if (left.x + left.width > right.x) { setError("La tabla 1-20 debe quedar a la izquierda de la tabla 21-40, sin solaparse."); return; }
+    if (left.x + left.width > right.x) { setError(`La tabla ${labels[0]} debe quedar a la izquierda de la tabla ${labels[1]}, sin solaparse.`); return; }
     try {
       const images = [left, right].map(rect => {
         const out = document.createElement("canvas");

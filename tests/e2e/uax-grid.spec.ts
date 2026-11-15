@@ -17,7 +17,7 @@ test.afterAll(async () => {
   await closeDb();
 });
 
-test("@mobile selecciona UAX 40x4 y conserva formato al recargar", async ({ page }) => {
+test("@mobile selecciona UAX de 4 opciones y conserva formato al recargar", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Correo electrónico").fill(email);
   await page.locator("#password").fill(password);

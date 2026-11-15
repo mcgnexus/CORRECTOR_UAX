@@ -38,9 +38,12 @@ test("valida el rango de configuración de examen y aplica cuatro opciones por d
   assert.equal(examCreateSchema.safeParse({ title: "Muy pocas", numQuestions: 10, numOptions: 1 }).success, false);
 });
 
-test("UAX exige 40 preguntas y cuatro opciones al crear", () => {
+test("UAX exige cuatro opciones y admite de 1 a 100 preguntas", () => {
   assert.equal(examCreateSchema.safeParse({ title: "UAX", numQuestions: 40, sheetFormat: "uax-grid-40" }).success, true);
-  assert.equal(examCreateSchema.safeParse({ title: "UAX", numQuestions: 39, sheetFormat: "uax-grid-40" }).success, false);
+  assert.equal(examCreateSchema.safeParse({ title: "UAX", numQuestions: 39, sheetFormat: "uax-grid-40" }).success, true);
+  assert.equal(examCreateSchema.safeParse({ title: "UAX", numQuestions: 50, sheetFormat: "uax-grid-40" }).success, true);
+  assert.equal(examCreateSchema.safeParse({ title: "UAX", numQuestions: 100, sheetFormat: "uax-grid-40" }).success, true);
+  assert.equal(examCreateSchema.safeParse({ title: "UAX", numQuestions: 101, sheetFormat: "uax-grid-40" }).success, false);
   assert.equal(examCreateSchema.safeParse({ title: "UAX", numQuestions: 40, numOptions: 5, sheetFormat: "uax-grid-40" }).success, false);
   assert.deepEqual(examUpdateSchema.parse({ sheetFormat: "uax-grid-40" }), { sheetFormat: "uax-grid-40" });
 });

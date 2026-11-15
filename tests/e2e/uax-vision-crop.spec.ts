@@ -12,7 +12,7 @@ test("exige dos recortes y consentimiento renovado y entrega las vistas previas 
     import Crop from './src/app/examenes/[examId]/uax-vision-crop';
     const canvas=document.createElement('canvas'); canvas.width=400; canvas.height=400;
     const ctx=canvas.getContext('2d'); ctx.fillStyle='red'; ctx.fillRect(0,0,200,400); ctx.fillStyle='blue'; ctx.fillRect(200,0,200,400);
-    createRoot(document.getElementById('root')).render(<Crop canvas={canvas} busy={false} onSubmit={v=>window.result=v} onCancel={()=>{}}/>);
+    createRoot(document.getElementById('root')).render(<Crop canvas={canvas} busy={false} numQuestions={40} onSubmit={v=>window.result=v} onCancel={()=>{}}/>);
   `, resolveDir: process.cwd(), loader: "tsx" }, bundle: true, write: false, platform: "browser", format: "esm", jsx: "automatic" });
   await page.route("https://crop.test/**", route => route.fulfill(route.request().url().endsWith(".js") ? { contentType: "text/javascript", body: result.outputFiles[0].text } : { contentType: "text/html", body: '<meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><script type="module" src="/fixture.js"></script>' }));
   await page.goto("https://crop.test/");

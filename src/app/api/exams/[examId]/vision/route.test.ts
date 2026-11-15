@@ -8,6 +8,7 @@ let exam: object | null = { sheetFormat: "uax-grid-40", numQuestions: 40, numOpt
 let ownerRequested = "";
 let calls = 0;
 let geminiCalls = 0;
+const visionQuestions: number[] = [];
 let geminiError: string | undefined;
 for (const [name, exports] of [
   ["@/auth", { auth: async () => userId ? { user: { id: userId } } : null }],
@@ -15,8 +16,8 @@ for (const [name, exports] of [
   ["@/lib/deepseek-vision", {
     MAX_VISION_BODY_BYTES: 1000,
     validateVisionRequest: (value: unknown) => [undefined, "deepseek", "gemini"].some((provider) => JSON.stringify(value) === JSON.stringify({ consent: true, images: ["first", "second"], ...(provider ? { provider } : {}) })),
-    deepSeekVision: async () => { calls++; return [{ questionNo: 1, selectedOption: 0, flag: "ok" }]; },
-    geminiVision: async () => { geminiCalls++; if (geminiError) throw new Error(geminiError); return [{ questionNo: 2, selectedOption: 1, flag: "ok" }]; },
+    deepSeekVision: async (_images: unknown, numQuestions: number) => { calls++; visionQuestions.push(numQuestions); return [{ questionNo: 1, selectedOption: 0, flag: "ok" }]; },
+    geminiVision: async (_images: unknown, numQuestions: number) => { geminiCalls++; visionQuestions.push(numQuestions); if (geminiError) throw new Error(geminiError); return [{ questionNo: 2, selectedOption: 1, flag: "ok" }]; },
   }],
 ] as const) {
   const id = require.resolve(name);
@@ -52,6 +53,7 @@ test("selecciona Gemini explícitamente y comprueba su propia clave", async () =
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { answers: [{ questionNo: 2, selectedOption: 1, flag: "ok" }] });
     assert.equal(geminiCalls, 1);
+    assert.equal(visionQuestions.at(-1), 40);
     assert.equal((await POST(request("otro"), context)).status, 400);
   } finally {
     if (old === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = old;
@@ -106,12 +108,15 @@ test("exige sesión, propiedad, formato y consentimiento antes de enviar", async
     assert.equal(ownerRequested, "user-1");
     exam = { sheetFormat: "bubbles", numQuestions: 40, numOptions: 4 };
     assert.equal((await POST(request(valid), context)).status, 422);
-    exam = { sheetFormat: "uax-grid-40", numQuestions: 40, numOptions: 4 };
+    exam = { sheetFormat: "uax-grid-40", numQuestions: 40, numOptions: 5 };
+    assert.equal((await POST(request(valid), context)).status, 422);
+    exam = { sheetFormat: "uax-grid-40", numQuestions: 50, numOptions: 4 };
     assert.equal((await POST(request({ ...valid, consent: false }), context)).status, 400);
     assert.equal(calls, 0);
     const response = await POST(request(valid), context);
     assert.equal(response.status, 200);
     assert.equal(calls, 1);
+    assert.equal(visionQuestions.at(-1), 50);
     assert.deepEqual(await response.json(), { answers: [{ questionNo: 1, selectedOption: 0, flag: "ok" }] });
   } finally {
     if (previous === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = previous;

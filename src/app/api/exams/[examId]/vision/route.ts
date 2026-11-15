@@ -21,7 +21,7 @@ export async function POST(request: Request, context: { params: Promise<{ examId
   if (!id.success) return fail("Examen no encontrado.", 404);
   const exam = await findOwnedExam(session.user.id, id.data);
   if (!exam) return fail("Examen no encontrado.", 404);
-  if (exam.sheetFormat !== "uax-grid-40" || exam.numQuestions !== 40 || exam.numOptions !== 4) return fail("El examen no es compatible con la lectura visual.", 422);
+  if (exam.sheetFormat !== "uax-grid-40" || exam.numOptions !== 4) return fail("El examen no es compatible con la lectura visual.", 422);
   const input = await readJsonLimited(request, MAX_VISION_BODY_BYTES);
   if (input.status === "too_large") return fail("Las imágenes superan el límite de tamaño.", 413);
   if (input.status !== "ok" || !validateVisionRequest(input.value)) return fail("Solicitud o imágenes no válidas.", 400);
@@ -29,7 +29,7 @@ export async function POST(request: Request, context: { params: Promise<{ examId
   if (!(isGemini ? process.env.GEMINI_API_KEY : process.env.DEEPSEEK_API_KEY)?.trim()) return fail("El servicio de visión no está configurado.", 503);
   const started = Date.now();
   try {
-    return Response.json({ answers: await (isGemini ? geminiVision : deepSeekVision)(input.value.images) }, { headers });
+    return Response.json({ answers: await (isGemini ? geminiVision : deepSeekVision)(input.value.images, exam.numQuestions) }, { headers });
   } catch (error) {
     const allowed = ["GEMINI_TIMEOUT", "GEMINI_UNAVAILABLE", "GEMINI_REQUEST_FAILED", "GEMINI_INVALID_OUTPUT", "DEEPSEEK_UNAVAILABLE", "DEEPSEEK_REQUEST_FAILED", "DEEPSEEK_INVALID_OUTPUT"];
     const code = error instanceof Error && allowed.includes(error.message) ? error.message : "UNKNOWN";

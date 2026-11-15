@@ -170,13 +170,13 @@ export default function ExamDetalleClient({
           <label htmlFor="sheetFormat">Formato de hoja</label>
           <select id="sheetFormat" name="sheetFormat" value={sheetFormat} onChange={(event) => setSheetFormat(event.target.value as SheetFormat)}>
             <option value="bubbles">Burbujas</option>
-            <option value="uax-grid-40">UAX letras 40 × 4 (experimental)</option>
+            <option value="uax-grid-40">UAX letras · 4 opciones (experimental)</option>
           </select>
-          {sheetFormat === "uax-grid-40" && <p className="aviso">Este formato requiere 40 preguntas y cuatro opciones. La lectura es experimental y debe revisarse íntegramente.</p>}
+          {sheetFormat === "uax-grid-40" && <p className="aviso">Este formato mantiene cuatro opciones fijas y admite de 1 a 100 preguntas: la tabla izquierda lleva las primeras y la derecha el resto. La lectura por visión es experimental y debe revisarse íntegramente.</p>}
           <label htmlFor="numQuestions">Número de preguntas (1–100)</label>
           <input id="numQuestions" name="numQuestions" type="number" min={1} max={100} defaultValue={examen.numQuestions} required />
           <label htmlFor="numOptions">Opciones por pregunta (2–26)</label>
-          <input id="numOptions" name="numOptions" type="number" min={2} max={26} defaultValue={examen.numOptions} required />
+          <input key={`options-${sheetFormat}`} id="numOptions" name="numOptions" type="number" min={2} max={26} defaultValue={sheetFormat === "uax-grid-40" ? 4 : examen.numOptions} readOnly={sheetFormat === "uax-grid-40"} required />
           {error ? <p className="error" role="alert">{error}</p> : null}
           {mensaje ? <p className="ok" role="status">{mensaje}</p> : null}
           <div style={{ marginTop: "0.75rem" }}>
@@ -243,11 +243,14 @@ export default function ExamDetalleClient({
           </div>
         </div>
       </section>
-      {examen.sheetFormat === "uax-grid-40" ? <UaxGridCalibrator
+      {examen.sheetFormat === "uax-grid-40" ? (examen.numQuestions === 40 ? <UaxGridCalibrator
         examId={examen.id}
         initialProfile={matrixProfile?.format === "uax-grid-40" ? matrixProfile : null}
         onProfileChange={setMatrixProfile}
-      /> : <MatrixCalibrator
+      /> : <section className="tarjeta" id="calibracion">
+        <h2>Calibración UAX</h2>
+        <p className="aviso">La calibración y la lectura local UAX solo admiten hojas de 40 preguntas (dos tablas de 20 filas). Para este examen de {examen.numQuestions} preguntas usa la lectura por visión directa.</p>
+      </section>) : <MatrixCalibrator
         examId={examen.id}
         numQuestions={examen.numQuestions}
         numOptions={examen.numOptions}
@@ -256,6 +259,7 @@ export default function ExamDetalleClient({
       />}
       <p><Link href="/alumnos">Abrir mi base de alumnos e importar Excel</Link>. Desde allí puedes asignar alumnos a este examen sin repetir la importación.</p>
       <OmrReader
+        key={`${examen.id}-${examen.structureVersion}`}
         sheetFormat={examen.sheetFormat}
         ownerId={ownerId}
         examId={examen.id}

@@ -86,9 +86,11 @@ test("formatos persistidos: compatibilidad, PATCH parcial, invalidacion, aislami
     assert.equal((await saveOwnedMatrixProfile(owner.id, exam.id, bubbles)).status, "invalid");
     assert.equal((await saveOwnedMatrixProfile(owner.id, exam.id, uax)).status, "saved");
     assert.equal((await getOwnedMatrixProfile(owner.id, exam.id))?.format, "uax-grid-40");
-    assert.equal((await updateOwnedExam(owner.id, exam.id, { numQuestions: 39 })).status, "invalid");
-    assert.equal((await db.select().from(exams).where(eq(exams.id, exam.id)))[0].numQuestions, 40);
-    assert.ok(await getOwnedMatrixProfile(owner.id, exam.id));
+    assert.equal((await updateOwnedExam(owner.id, exam.id, { numQuestions: 39 })).status, "updated");
+    assert.equal((await db.select().from(exams).where(eq(exams.id, exam.id)))[0].numQuestions, 39);
+    assert.equal(await getOwnedMatrixProfile(owner.id, exam.id), null);
+    assert.equal((await db.select().from(answerKeyItems).where(eq(answerKeyItems.examId, exam.id))).length, 0);
+    assert.equal((await saveOwnedMatrixProfile(owner.id, exam.id, uax)).status, "saved");
     const [student] = await db.insert(examStudents).values({ examId: exam.id, name: "Alumno" }).returning();
     await db.insert(examResults).values({ studentId: student.id });
     assert.equal((await updateOwnedExam(owner.id, exam.id, { sheetFormat: "bubbles" })).status, "results_exist");
@@ -103,7 +105,11 @@ test("formatos persistidos: compatibilidad, PATCH parcial, invalidacion, aislami
     assert.equal(await getOwnedMatrixProfile(owner.id, exam.id), null);
     assert.equal((await db.select().from(answerKeyItems).where(eq(answerKeyItems.examId, exam.id))).length, 0);
     assert.equal((await updateOwnedExam(other.id, exam.id, { sheetFormat: "uax-grid-40" })).status, "not_found");
-    assert.equal((await updateOwnedExam(owner.id, exam.id, { sheetFormat: "uax-grid-40" })).status, "invalid");
+    assert.equal((await updateOwnedExam(owner.id, exam.id, { sheetFormat: "uax-grid-40" })).status, "updated");
+    const uaxExam = await createOwnedExam(owner.id, { title: "UAX 50", numQuestions: 50, numOptions: 4, sheetFormat: "uax-grid-40", subject: null });
+    assert.equal(uaxExam.numQuestions, 50);
+    assert.equal(uaxExam.numOptions, 4);
+    assert.equal(uaxExam.sheetFormat, "uax-grid-40");
   } finally {
     await db.delete(users).where(eq(users.id, owner.id));
     await db.delete(users).where(eq(users.id, other.id));

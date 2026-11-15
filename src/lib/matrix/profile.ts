@@ -64,7 +64,7 @@ export function matrixProfileProblems(
   const problems: string[] = [];
   if ((input.format ?? "bubbles") !== sheetFormat) problems.push("La calibracion no corresponde al formato del examen.");
   if (input.format === "uax-grid-40") {
-    if (numQuestions !== 40 || numOptions !== 4) problems.push("UAX requiere 40 preguntas y cuatro opciones.");
+    if (numOptions !== 4) problems.push("UAX requiere cuatro opciones por pregunta.");
     return problems;
   }
   if (input.blocks !== 2) problems.push("La matriz debe tener dos bloques.");

@@ -44,7 +44,7 @@ respuestas desde el móvil. La especificación completa está en
     cuota distribuida para solicitudes de visión.
 5. Para probar Gemini Vision, configurar `GEMINI_API_KEY` en `.env.local` en el
    servidor y reiniciarlo. Opcionalmente, `GEMINI_VISION_MODEL` selecciona el
-   modelo. En el lector UAX de 40 preguntas, elegir «Visión directa con Gemini».
+   modelo. En el lector UAX (1–100 preguntas), elegir «Visión directa con Gemini».
    Los recortes confirmados se envían a Google y requieren revisión antes de
    guardar; configura límites de gasto en el proveedor.
 

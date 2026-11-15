@@ -137,10 +137,10 @@ export default function ExamenesClient({ examenes, ownerId }: { examenes: Exam[]
           <label htmlFor="sheetFormat">Formato de hoja</label>
           <select id="sheetFormat" name="sheetFormat" value={sheetFormat} onChange={(event) => setSheetFormat(event.target.value)}>
             <option value="bubbles">Burbujas</option>
-            <option value="uax-grid-40">UAX letras 40 × 4 (experimental)</option>
+            <option value="uax-grid-40">UAX letras · 4 opciones (experimental)</option>
           </select>
           <label htmlFor="numQuestions">Número de preguntas (1–100)</label>
-          <input key={`questions-${sheetFormat}`} id="numQuestions" name="numQuestions" type="number" min={1} max={100} defaultValue={40} readOnly={sheetFormat === "uax-grid-40"} required />
+          <input key={`questions-${sheetFormat}`} id="numQuestions" name="numQuestions" type="number" min={1} max={100} defaultValue={40} required />
           <label htmlFor="numOptions">Opciones por pregunta (2–26)</label>
           <input key={`options-${sheetFormat}`} id="numOptions" name="numOptions" type="number" min={2} max={26} defaultValue={4} readOnly={sheetFormat === "uax-grid-40"} required />
           {error ? <p className="error" role="alert">{error}</p> : null}

@@ -33,8 +33,8 @@ export const examCreateSchema = examFieldsSchema
     numOptions: examFieldsSchema.shape.numOptions.default(4),
     sheetFormat: sheetFormatSchema.default("bubbles"),
   })
-  .refine((value) => value.sheetFormat !== "uax-grid-40" || (value.numQuestions === 40 && value.numOptions === 4),
-    { message: "UAX requiere exactamente 40 preguntas y cuatro opciones." })
+  .refine((value) => value.sheetFormat !== "uax-grid-40" || value.numOptions === 4,
+    { message: "UAX requiere cuatro opciones por pregunta." })
   .transform((value) => ({ ...value, subject: value.subject ?? null }));
 
 export const examUpdateSchema = examFieldsSchema

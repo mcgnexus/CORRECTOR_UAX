@@ -110,7 +110,9 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
   const [analyzedTone, setAnalyzedTone] = useState<Tone | null>(null);
   const operationRef = useRef(0);
   const [busy, setBusy] = useState(false);
-  const [visionMode, setVisionMode] = useState(false);
+  const [visionModeState, setVisionMode] = useState(false);
+  const forceVision = sheetFormat === "uax-grid-40" && numQuestions !== 40;
+  const vision = forceVision || visionModeState;
   const [visionProvider, setVisionProvider] = useState<"deepseek" | "gemini">("deepseek");
   const [visionCrop, setVisionCrop] = useState(false);
   const visionAbort = useRef<AbortController | null>(null);
@@ -529,7 +531,7 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
     if (!file) return;
     if (!file.type.startsWith("image/")) { setError("Elige una imagen JPG, PNG o WebP."); return; }
     if (file.size > MAX_FILE_SIZE) { setError("La imagen supera 20 MB. Elige una foto más pequeña."); return; }
-    if ((!profile && !visionMode) || !keyValidated) return;
+    if ((!profile && !vision) || !keyValidated) return;
     setBusy(true);
     try {
       const bitmap = await createImageBitmap(file);
@@ -542,7 +544,7 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
       }
       bitmapRef.current = bitmap;
       setImageLoaded(true);
-      if (visionMode) {
+      if (vision) {
         const angle = bitmap.height <= bitmap.width ? 90 : 0;
         setRotation(angle);
         paint(angle, FULL_CROP, { brightness: 0, contrast: 1 });
@@ -558,7 +560,7 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
 
   function rotateImage(delta: number) {
     if (!bitmapRef.current) return;
-    if (visionMode) {
+    if (vision) {
       const angle = (rotation + delta + 360) % 360;
       setRotation(angle);
       paint(angle, FULL_CROP, tone);
@@ -588,7 +590,7 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
       });
       if (operation !== operationRef.current) return;
       if (!response.ok) throw new Error(typeof data === "object" && data !== null && "error" in data && typeof data.error === "string" ? data.error : `No se pudo analizar la imagen con ${providerName}.`);
-      const answers = visionReview(data);
+      const answers = visionReview(data, numQuestions);
       setReview(answers);
       setReviewHasUnsavedChanges(true);
       setProfileAtReadStart(profile);
@@ -1184,16 +1186,16 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
 
   const disabledReason = !keyValidated
     ? "Valida una clave completa antes de corregir hojas."
-    : !profile && !visionMode
+    : !profile && !vision
     ? "Primero calibra la matriz de este examen."
-    : numQuestions > 50
+    : sheetFormat !== "uax-grid-40" && numQuestions > 50
       ? "La lectura está limitada a 50 preguntas hasta disponer de una matriz multipágina."
       : "";
 
   return <>
   <section className="tarjeta">
     <h2>Introducir examen del alumno</h2>
-    {sheetFormat === "uax-grid-40" && <label>Método de lectura <select value={visionMode ? visionProvider : "local"} disabled={busy || saving} onChange={(event) => { if (review && !window.confirm("Cambiar de método descartará la revisión actual. ¿Continuar?")) return; reset(); const value = event.target.value; setVisionMode(value !== "local"); if (value === "deepseek" || value === "gemini") setVisionProvider(value); }}><option value="local">Lectura local (OMR)</option><option value="deepseek">Visión directa con DeepSeek (experimental)</option><option value="gemini">Visión directa con Gemini (experimental)</option></select></label>}
+    {sheetFormat === "uax-grid-40" && <label>Método de lectura <select value={vision ? visionProvider : "local"} disabled={busy || saving} onChange={(event) => { if (review && !window.confirm("Cambiar de método descartará la revisión actual. ¿Continuar?")) return; reset(); const value = event.target.value; setVisionMode(value !== "local"); if (value === "deepseek" || value === "gemini") setVisionProvider(value); }}>{numQuestions === 40 && <option value="local">Lectura local (OMR)</option>}<option value="deepseek">Visión directa con DeepSeek (experimental)</option><option value="gemini">Visión directa con Gemini (experimental)</option></select></label>}
     {profile && "format" in profile && profile.format === "uax-grid-40" && <p className="aviso">Lectura UAX experimental: aún no validada con hojas reales. Comprueba cada respuesta contra la fotografía antes de guardar.</p>}
     <p className="vacio">Usa «Introducir respuestas» para una entrega manual. La lectura local no sube la foto; si eliges visión directa, solo se envían al proveedor seleccionado los recortes que confirmes expresamente.</p>
     {disabledReason ? <p className="vacio">{disabledReason} {!profile && <Link href={`/examenes/${examId}#calibracion`}>Ir a calibración</Link>}</p> : <>
@@ -1219,16 +1221,16 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
         />
         {cropMode && cropDraft ? <div className="crop-selection" style={{ left: cropDraft.x * 100 + "%", top: cropDraft.y * 100 + "%", width: cropDraft.w * 100 + "%", height: cropDraft.h * 100 + "%" }} /> : null}
       </div>
-      {visionMode && imageLoaded && visionCrop && previewCanvas && <UaxVisionCrop canvas={previewCanvas} busy={busy} provider={visionProvider === "gemini" ? "Gemini" : "DeepSeek"} onSubmit={(images) => { void sendVision(images); }} onCancel={() => setVisionCrop(false)} />}
+      {vision && imageLoaded && visionCrop && previewCanvas && <UaxVisionCrop canvas={previewCanvas} busy={busy} numQuestions={numQuestions} provider={visionProvider === "gemini" ? "Gemini" : "DeepSeek"} onSubmit={(images) => { void sendVision(images); }} onCancel={() => setVisionCrop(false)} />}
       {imageLoaded && <div className="fila-acciones">
         <button type="button" className="secundario" onClick={() => rotateImage(-90)} disabled={busy || saving}>Girar izquierda</button>
         <button type="button" className="secundario" onClick={() => rotateImage(90)} disabled={busy || saving}>Girar derecha</button>
-        {visionMode && <button type="button" className="secundario" onClick={() => { if (review && !window.confirm("Una nueva lectura sustituirá la revisión actual. ¿Descartarla?")) return; setReview(null); setReviewHasUnsavedChanges(false); setVisionCrop(true); }} disabled={busy || saving}>Seleccionar tablas para {visionProvider === "gemini" ? "Gemini" : "DeepSeek"}</button>}
-        {!visionMode && <button type="button" className="secundario" onClick={startCrop} disabled={busy || saving || cropMode}>Recortar</button>}
-        {!visionMode && <button type="button" className="secundario" onClick={autoRetouch} disabled={busy || saving || cropMode || manualMode}>Retoque automático</button>}
-        {!visionMode && <button type="button" className="secundario" onClick={startManualMarkers} disabled={busy || saving || cropMode}>Marcar esquinas</button>}
-        {!visionMode && profile && "format" in profile && profile.format === "uax-grid-40" && <button type="button" className="secundario" onClick={startTapMode} disabled={busy || saving || cropMode}>Dos toques por tabla</button>}
-        {!visionMode && <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving || cropMode}>Releer marcas</button>}
+        {vision && <button type="button" className="secundario" onClick={() => { if (review && !window.confirm("Una nueva lectura sustituirá la revisión actual. ¿Descartarla?")) return; setReview(null); setReviewHasUnsavedChanges(false); setVisionCrop(true); }} disabled={busy || saving}>Seleccionar tablas para {visionProvider === "gemini" ? "Gemini" : "DeepSeek"}</button>}
+        {!vision && <button type="button" className="secundario" onClick={startCrop} disabled={busy || saving || cropMode}>Recortar</button>}
+        {!vision && <button type="button" className="secundario" onClick={autoRetouch} disabled={busy || saving || cropMode || manualMode}>Retoque automático</button>}
+        {!vision && <button type="button" className="secundario" onClick={startManualMarkers} disabled={busy || saving || cropMode}>Marcar esquinas</button>}
+        {!vision && profile && "format" in profile && profile.format === "uax-grid-40" && <button type="button" className="secundario" onClick={startTapMode} disabled={busy || saving || cropMode}>Dos toques por tabla</button>}
+        {!vision && <button type="button" className="secundario" onClick={() => renderAndAnalyze(rotation, tone)} disabled={busy || saving || cropMode}>Releer marcas</button>}
       </div>}
       {cropMode && <div className="fila-acciones">
         <button type="button" onClick={applyCrop} disabled={!cropDraft || busy}>Aplicar recorte</button>
@@ -1236,7 +1238,7 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
       </div>}
       {cropMode ? <p className="vacio" role="status">Arrastra sobre la imagen para encuadrar la hoja. Después pulsa «Aplicar recorte».</p> : null}
       {!isFullCrop(crop) && !cropMode ? <p className="vacio">Recorte aplicado. <button type="button" className="secundario" onClick={resetCrop} disabled={busy || saving}>Restablecer recorte</button></p> : null}
-      {imageLoaded && !visionMode && <fieldset className="matriz-ajustes">
+      {imageLoaded && !vision && <fieldset className="matriz-ajustes">
         <legend>Retoque de imagen</legend>
         <label htmlFor="omr-brightness">Brillo ({tone.brightness})</label>
         <input id="omr-brightness" type="range" disabled={busy || saving || manualMode} min={-60} max={60} step={2} value={tone.brightness} onChange={(event) => previewTone({ ...tone, brightness: Number(event.target.value) })} />
@@ -1260,7 +1262,7 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
       </fieldset>}
       {detectedMarkers && !manualMode && <p className="vacio" role="status">Se han localizado las cuatro marcas de registro.</p>}
       {detectedTables && !manualMode && <p className="vacio" role="status">Se han localizado las dos tablas. Comprueba que 1 y 21 estén en la tabla correcta.</p>}
-      {busy && <p role="status">{visionMode ? "Procesando imagen…" : `Procesando localmente… ${progress}%`}</p>}
+      {busy && <p role="status">{vision ? "Procesando imagen…" : `Procesando localmente… ${progress}%`}</p>}
       {error && <p className="error" role="alert">{error}</p>}
       {review && reviewHasUnsavedChanges && profileAtReadStart !== profile ? <p className="aviso" role="status">La calibración cambió. Se aplicará a la próxima lectura; la revisión actual no se recalcula automáticamente.</p> : null}
       {result && <>

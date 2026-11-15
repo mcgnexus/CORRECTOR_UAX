@@ -42,11 +42,13 @@ function uaxProfile() {
   };
 }
 
-test("acepta UAX v1 y exige dimensiones y formato compatibles", () => {
+test("acepta UAX v1 y exige cuatro opciones y formato compatibles", () => {
   const input = matrixProfileInputSchema.parse(uaxProfile());
   assert.deepEqual(matrixProfileProblems(input, 40, 4, "uax-grid-40"), []);
+  assert.deepEqual(matrixProfileProblems(input, 39, 4, "uax-grid-40"), []);
+  assert.deepEqual(matrixProfileProblems(input, 50, 4, "uax-grid-40"), []);
   assert.ok(matrixProfileProblems(input, 40, 4, "bubbles").length);
-  assert.ok(matrixProfileProblems(input, 39, 4, "uax-grid-40").length);
+  assert.ok(matrixProfileProblems(input, 39, 5, "uax-grid-40").length);
   assert.ok(matrixProfileProblems(matrixProfileInputSchema.parse(profile(40, 4)), 40, 4, "uax-grid-40").length);
 });
 

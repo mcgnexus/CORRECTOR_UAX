@@ -57,7 +57,7 @@ export const exams = pgTable(
   (table) => [
     index("exams_owner_created_idx").on(table.ownerId, table.createdAt),
     index("exams_owner_title_idx").on(table.ownerId, table.title),
-    check("exams_sheet_format_check", sql`${table.sheetFormat} = 'bubbles' or (${table.sheetFormat} = 'uax-grid-40' and ${table.numQuestions} = 40 and ${table.numOptions} = 4)`),
+    check("exams_sheet_format_check", sql`${table.sheetFormat} = 'bubbles' or (${table.sheetFormat} = 'uax-grid-40' and ${table.numOptions} = 4)`),
   ],
 );
 
