@@ -52,9 +52,11 @@ test("version optimista conserva cambios y DNI editado no duplica vinculo de exa
     assert.equal((await updateDirectoryStudent(owner.id, profile.id, { name: "Obsoleto", expectedVersion: 1 })).status, "conflict");
     assert.equal((await listDirectoryStudents(owner.id))[0].name, "Alumno");
     assert.equal((await createOwnedStudent(owner.id, exam.id, { name: "Alumno", dni: "12345678Z" })).status, "duplicate");
-    assert.equal((await importOwnedStudents(owner.id, exam.id, "nombre,dni\nAlumno,12345678Z")).status, "invalid");
+    assert.equal((await importOwnedStudents(owner.id, exam.id, "nombre,dni\nAlumno,12345678Z")).status, "imported");
     const rows = await db.select().from(examStudents).where(eq(examStudents.examId, exam.id));
-    assert.equal(rows.length, 1); assert.equal(rows[0].dni, "00000000T");
+    assert.equal(rows.length, 2);
+    assert.ok(rows.some((row) => row.dni === "00000000T"));
+    assert.ok(rows.some((row) => row.dni === null));
   } finally { await db.delete(users).where(eq(users.id, owner.id)); }
 });
 

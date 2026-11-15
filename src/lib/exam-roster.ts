@@ -91,31 +91,25 @@ export function parseRosterCsv(csv: unknown): { success: true; students: ExamStu
   const headers = parsed.rows[0].cells.map((cell) => cell.trim().toLocaleLowerCase("es-ES"));
   const nameIndex = headers.indexOf("nombre");
   const dniIndex = headers.indexOf("dni");
-  if (nameIndex < 0 || dniIndex < 0 || nameIndex === dniIndex || headers.length !== 2) {
-    return { success: false, problems: [{ row: parsed.rows[0].row, message: "El encabezado debe contener únicamente las columnas nombre,dni." }] };
+  if (nameIndex < 0 || headers.length > 2 || (headers.length === 2 && (dniIndex < 0 || nameIndex === dniIndex))) {
+    return { success: false, problems: [{ row: parsed.rows[0].row, message: "El encabezado debe contener la columna nombre y, opcionalmente, dni." }] };
   }
   const dataRows = parsed.rows.slice(1);
   const problems: CsvProblem[] = [];
   const students: ExamStudentInput[] = [];
   const studentRows: number[] = [];
-  const seen = new Set<string>();
   if (dataRows.length > MAX_ROSTER_CSV_ROWS) return { success: false, problems: [{ row: dataRows[MAX_ROSTER_CSV_ROWS].row, message: `El CSV supera el límite de ${MAX_ROSTER_CSV_ROWS} alumnos.` }] };
 
   for (const record of dataRows) {
-    if (record.cells.length !== 2) {
-      problems.push({ row: record.row, message: "La fila debe tener exactamente dos columnas." });
+    if (record.cells.length !== headers.length) {
+      problems.push({ row: record.row, message: "La fila debe tener el mismo número de columnas que el encabezado." });
       continue;
     }
-    const normalized = normalizeStudent({ name: record.cells[nameIndex], dni: record.cells[dniIndex] });
+    const normalized = normalizeStudent({ name: record.cells[nameIndex] });
     if (!normalized.success) {
       problems.push({ row: record.row, message: normalized.message });
       continue;
     }
-    if (normalized.data.dni && seen.has(normalized.data.dni)) {
-      problems.push({ row: record.row, message: "El DNI está duplicado en el archivo." });
-      continue;
-    }
-    if (normalized.data.dni) seen.add(normalized.data.dni);
     students.push(normalized.data);
     studentRows.push(record.row);
   }

@@ -9,12 +9,28 @@ test("normaliza nombre y DNI/NIE con checksum", () => {
   });
 });
 
-test("importa CSV UTF-8 con nombres entrecomillados y detecta DNI repetido sin exponerlo", () => {
-  const parsed = parseRosterCsv('nombre,dni\r\n"Pérez, Ana",X1234567L\r\nLuis,x1234567l\r\n');
-  assert.equal(parsed.success, false);
-  if (parsed.success) return;
-  assert.deepEqual(parsed.problems, [{ row: 3, message: "El DNI está duplicado en el archivo." }]);
+test("importa CSV UTF-8 solo con la columna nombre y con nombres entrecomillados", () => {
+  const parsed = parseRosterCsv('nombre\r\n"Pérez, Ana"\r\nLuis\r\n');
+  assert.equal(parsed.success, true);
+  if (!parsed.success) return;
+  assert.deepEqual(parsed.students, [
+    { name: "Pérez, Ana", dni: null },
+    { name: "Luis", dni: null },
+  ]);
+});
+
+test("ignora la columna DNI aunque exista, sea inválida o esté repetida", () => {
+  const parsed = parseRosterCsv('nombre,dni\r\n"Pérez, Ana",X1234567L\r\nLuis,no-es-un-dni\r\n"Pérez, Ana",X1234567L\r\n');
+  assert.equal(parsed.success, true);
+  if (!parsed.success) return;
+  assert.deepEqual(parsed.students.map((student) => student.dni), [null, null, null]);
   assert.equal(JSON.stringify(parsed).includes("X1234567L"), false);
+});
+
+test("el CSV con documentos inválidos importa solo el nombre", () => {
+  const parsed = parseRosterCsv("nombre,dni\nAna,12345678Z\nLuis,12345678A");
+  assert.equal(parsed.success, true);
+  if (parsed.success) assert.deepEqual(parsed.students.map((student) => student.name), ["Ana", "Luis"]);
 });
 
 test("valida DNI/NIE, conserva ceros y rechaza letras, signos y prefijos incorrectos", () => {
@@ -28,7 +44,7 @@ test("valida DNI/NIE, conserva ceros y rechaza letras, signos y prefijos incorre
 });
 
 test("CSV con documento inválido devuelve solo problemas por fila, nunca importación parcial", () => {
-  const parsed = parseRosterCsv("nombre,dni\nAna,12345678Z\nLuis,12345678A");
+  const parsed = parseRosterCsv("nombre,dni\nAna,12345678Z\nX,12345678A");
   assert.equal(parsed.success, false);
   if (!parsed.success) assert.deepEqual(parsed.problems.map((problem) => problem.row), [3]);
   assert.equal("students" in parsed, false);
@@ -37,7 +53,9 @@ test("CSV con documento inválido devuelve solo problemas por fila, nunca import
 test("CSV mal formado o con columnas incorrectas no se acepta parcialmente", () => {
   assert.equal(parseRosterCsv("nombre,dni\n\"Ana,X123\n").success, false);
   assert.equal(parseRosterCsv("nombre,dni,extra\nAna,X123,x").success, false);
-  assert.equal(parseRosterCsv("nombre,dni\nAna,X123\nLuis,").success, false);
+  assert.equal(parseRosterCsv("nombre,email\nAna,ana@example.test").success, false);
+  assert.equal(parseRosterCsv("nombre\nAna\nLuis,X123").success, false);
+  assert.equal(parseRosterCsv("nombre,dni\nAna,X123\nLuis,").success, true);
 });
 
 test("aplica límite de tamaño CSV", () => {

@@ -1320,7 +1320,7 @@ export default function OmrReader({ sheetFormat, examId, ownerId, structureVersi
       <button type="submit">Añadir alumno</button>
     </form>
     <div className="omr-import">
-      <label htmlFor="roster-csv">Importar CSV UTF-8 (`nombre,dni`, máximo 2 MB / 1000 alumnos)</label>
+      <label htmlFor="roster-csv">Importar CSV UTF-8 (`nombre` o `nombre,dni`; el DNI se ignora; máximo 2 MB / 1000 alumnos)</label>
       <input id="roster-csv" type="file" accept=".csv,text/csv" disabled={importing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void importRoster(file); }} />
       {importing && <span role="status">Validando e importando…</span>}
     </div>

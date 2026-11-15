@@ -12,9 +12,10 @@ test("el DNI es opcional pero un documento presente debe ser valido", () => {
   assert.equal(normalizeStudent({ name: "Alumno", dni: 1234 }).success, false);
 });
 
-test("CSV permite homonimos sin DNI sin confundirlos con duplicados", () => {
+test("CSV permite homonimos sin DNI y descarta la columna DNI", () => {
   const parsed = parseRosterCsv("nombre,dni\nAlumno Uno,\nAlumno Uno,\nAlumno Dos,12345678Z");
   assert.equal(parsed.success, true);
-  if (parsed.success) assert.deepEqual(parsed.students.map((s) => s.dni), [null, null, "12345678Z"]);
-  assert.equal(parseRosterCsv("nombre,dni\nAlumno Uno,12345678Z\nAlumno Dos,12345678Z").success, false);
+  if (parsed.success) assert.deepEqual(parsed.students.map((s) => s.dni), [null, null, null]);
+  assert.equal(parseRosterCsv("nombre,dni\nAlumno Uno,12345678Z\nAlumno Dos,12345678Z").success, true);
+  assert.equal(parseRosterCsv("nombre\nAlumno Uno\nAlumno Dos").success, true);
 });

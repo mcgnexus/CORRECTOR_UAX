@@ -60,7 +60,7 @@ test("edición optimista conserva datos legados y resultados, limita acceso y ev
     assert.equal(reloaded?.version, 3);
     assert.equal((await updateOwnedStudent(owner.id, exam.id, pending.id, { name: "Pending edited", dni: "X1234567L", originalName: pending.name, originalDni: pending.dni })).status, "updated");
     assert.equal((await listOwnedExamRoster(owner.id, exam.id)).find((s) => s.id === pending.id)?.savedAt, null);
-    assert.equal((await importOwnedStudents(owner.id, exam.id, "nombre,dni\nValid,Y1234567X\nInvalid,bad")).status, "invalid");
+    assert.equal((await importOwnedStudents(owner.id, exam.id, "nombre\nValid\nX")).status, "invalid");
     assert.equal((await listOwnedExamRoster(owner.id, exam.id)).length, 2);
   } finally {
     for (const user of [owner, other, admin]) await db.delete(users).where(eq(users.id, user.id));
